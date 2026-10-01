@@ -58,7 +58,7 @@ def fixture_atlas() -> dict:
              "evidence": [{"repo": "shop", "path": "docs/a.md",
                            "anchor": "usage", "note": "plan"}]},
             {"id": "c-leg", "title": "Legacy", "layer": "l-store",
-             "home": "external:OldCo", "status": "absent", "summary": "Absent box.",
+             "home": "external:OldCo", "status": "retired", "summary": "Retired box.",
              "surfaces": [], "owns": [],
              "evidence": [{"repo": "shop", "path": "old.md",
                            "url": "https://github.com/Example/shop/blob/main/custom.md"}]},
@@ -363,21 +363,20 @@ class ModelParityTests(unittest.TestCase):
         self.assertEqual(set(render.COMPONENT_STATUSES), model.COMPONENT_STATUS)
         self.assertEqual(set(render.FLOW_STATUSES), model.FLOW_STATUS)
 
-    def test_documented_and_absent_components_with_long_titles_render(self) -> None:
+    def test_retired_and_planned_components_with_long_titles_render(self) -> None:
         from estate_atlas import model
         shop = Path(__file__).resolve().parents[1] / "examples" / "shop" / "atlas.json"
         doc = json.loads(shop.read_text(encoding="utf-8"))
-        doc["components"][0]["status"] = "documented"
+        doc["components"][0]["status"] = "retired"
         doc["components"][0]["evidence"] = []
-        doc["components"][1]["status"] = "absent"
+        doc["components"][1]["status"] = "planned"
         doc["components"][1]["evidence"] = []
         doc["components"][1]["title"] = "T" * 300
         model.validate(doc)
         parsed = render.parse_atlas(doc)
         html = render.render_html(parsed)
-        self.assertIn('class="dot documented"', html)
-        self.assertIn('class="dot absent"', html)
+        self.assertIn('class="dot retired"', html)
+        self.assertIn('class="dot planned"', html)
         mmd = render.render_mermaid(parsed, "flows")
-        self.assertIn("classDef documented", mmd)
-        self.assertIn("classDef absent", mmd)
+        self.assertIn("classDef retired", mmd)
 
