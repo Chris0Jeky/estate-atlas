@@ -272,8 +272,8 @@
         "api"
       ],
       "format": "http",
-      "status": "documented",
-      "summary": "The provider's charge endpoint, documented by the provider.",
+      "status": "planned",
+      "summary": "The provider's charge endpoint, documented by the provider; not wired yet.",
       "evidence": []
     }
   ],

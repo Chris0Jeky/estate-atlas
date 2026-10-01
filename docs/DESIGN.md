@@ -39,8 +39,8 @@ The format is atlas@2 as it runs in production today:
 The loader accepts `"schema": "estate-atlas@2"`, and also any value that ends in `/atlas@2`, so existing atlases
 keep working unchanged.
 
-- **Statuses.** Components can be live, partial, planned, documented or absent; flows can be live, partial,
-  documented, planned or absent.
+- **Statuses.** Components and contracts can be live, partial, planned or retired; flows can be live, partial,
+  documented, planned or absent. Only a planned item (or a documented or absent flow) may carry `expect`.
 - **Traffic rules.** Each rule has a `source` (`journal`, `links` or `events`) and optional `producer`, `verb`,
   `actor` and `subject` patterns. A pattern is exact or a prefix ending in `*`. A rule may also carry `pulse: true`.
 - **No overlap.** Rules on different flows may not overlap. `check` proves this statically, so one record crosses at

@@ -144,12 +144,19 @@ class ValidationTests(unittest.TestCase):
             with self.assertRaises(model.AtlasError):
                 model.validate(doc)
 
-    def test_documented_and_absent_statuses_are_accepted(self) -> None:
+    def test_component_statuses_are_the_production_set(self) -> None:
         doc = minimal()
-        doc["components"][1].update(status="documented")
+        doc["components"][1].update(status="planned")
         doc["components"][1]["evidence"] = []
         doc["components"][1]["expect"] = [{"repo": "extra", "path": "docs/SINK.md"}]
         model.validate(doc)
+        doc["components"][1].pop("expect")
+        doc["components"][1].update(status="retired")
+        model.validate(doc)
+        for status in ("documented", "absent"):
+            doc["components"][1].update(status=status)
+            with self.assertRaises(model.AtlasError):
+                model.validate(doc)
 
 
 class InstancesTests(unittest.TestCase):
