@@ -357,5 +357,36 @@ class CheckTests(unittest.TestCase):
             self.assertTrue(message)
 
 
+class NoteTests(unittest.TestCase):
+    NOTE = "Generated from x. Do not edit."
+
+    def test_custom_note_replaces_the_default(self) -> None:
+        md = explain_mod.render_tour_md(fixture_atlas(), note=self.NOTE)
+        self.assertIn(self.NOTE, md)
+        self.assertNotIn(explain_mod.GENERATED_NOTE, md)
+        self.assertIn(explain_mod.GENERATED_NOTE, explain_mod.render_tour_md(fixture_atlas()))
+
+    def test_check_passes_with_the_matching_note_and_fails_otherwise(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tour_path = Path(tmp) / "TOUR.md"
+            tour_path.write_text(explain_mod.render_tour_md(fixture_atlas(), note=self.NOTE),
+                                 encoding="utf-8", newline="\n")
+            ok, message = explain_mod.check_tour(tour_path, fixture_atlas(), note=self.NOTE)
+            self.assertTrue(ok, message)
+            ok, message = explain_mod.check_tour(tour_path, fixture_atlas(),
+                                                 write_hint="run make tour")
+            self.assertFalse(ok)
+            self.assertIn("run make tour", message)
+            self.assertNotIn(explain_mod.TOUR_WRITE_HINT, message)
+            ok, message = explain_mod.check_tour(tour_path, fixture_atlas())
+            self.assertFalse(ok)
+            self.assertIn(explain_mod.TOUR_WRITE_HINT, message)
+
+    def test_a_multi_line_or_empty_note_raises(self) -> None:
+        for bad in ("a\nb", "a\rb", "", "  "):
+            with self.assertRaises(ValueError):
+                explain_mod.render_tour_md(fixture_atlas(), note=bad)
+
+
 if __name__ == "__main__":
     unittest.main()
