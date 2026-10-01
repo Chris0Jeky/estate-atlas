@@ -608,6 +608,15 @@ class RouteFilesTests(unittest.TestCase):
         a["timing"] = b["timing"] = None
         self.assertEqual(a, b)
 
+    def test_no_timestamped_record_and_no_now_routes_at_epoch_zero(self):
+        empty = self.write("empty.jsonl", [])
+        a = T.route_files(SHOP_ATLAS, journal=empty)
+        b = T.route_files(SHOP_ATLAS, journal=empty)
+        self.assertEqual(a["generated"], 0.0)
+        a["timing"] = b["timing"] = None
+        self.assertEqual(a, b)
+        self.assertEqual(T.route_files(SHOP_ATLAS)["generated"], 0.0)
+
     def test_no_files_is_an_empty_snapshot(self):
         doc = T.route_files(SHOP_ATLAS)
         self.assertEqual(doc["coverage"]["records"], 0)

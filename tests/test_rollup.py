@@ -360,6 +360,10 @@ class BadPathTests(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _first_backfill_day(now_f):
+    return H._day_of(float(int(now_f // DAY) * DAY) - H.BACKFILL_DAYS * DAY)
+
+
 class _FlippingIndex:
     """A real index whose rules vanish while a rollup is routing (another thread's refresh failed)."""
 
@@ -397,6 +401,21 @@ class IndexChangedTests(unittest.TestCase):
             hist.close()
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_a_skipped_rollup_leaves_no_first_day(self):
+        hist, tmp, index, jr, er, lf = make_store(journal=[jrow(1, day_at(D3))])
+        try:
+            out = hist.rollup(_FlippingIndex(index), jr, er, lf, NOW)
+            self.assertEqual(out["skipped"], "index changed during rollup")
+            self.assertIsNone(hist._meta("first_day"))
+            self.assertIsNone(hist._meta("last_day"))
+            self.assertEqual(hist.days_stored(), 0)
+            hist.rollup(index, jr, er, lf, NOW + 5 * DAY)  # the retry lands days later
+            self.assertEqual(hist._meta("first_day"), _first_backfill_day(NOW + 5 * DAY))
+            self.assertEqual(hist.last_day(), H._yesterday(NOW + 5 * DAY))
+        finally:
+            hist.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 class OwnHistoryTests(unittest.TestCase):
     """A flow is flagged only on 35 days of its own history (events are kept 14 days: a backfill must not
@@ -412,7 +431,6 @@ class OwnHistoryTests(unittest.TestCase):
         self.assertEqual(fading, [])
 
 
-
 class AtomicRollupTests(unittest.TestCase):
     """A rollup is one transaction: a failure mid-write leaves no half-written day."""
 
@@ -421,8 +439,8 @@ class AtomicRollupTests(unittest.TestCase):
         try:
             real = hist._write_days
 
-            def boom(acc, yesterday, today_start):
-                real(acc, yesterday, today_start)  # the rows and last_day are written...
+            def boom(*args):
+                real(*args)  # the rows, first_day and last_day are written...
                 raise RuntimeError("disk full")    # ...then the write fails
 
             hist._write_days = boom
@@ -430,6 +448,7 @@ class AtomicRollupTests(unittest.TestCase):
                 hist.rollup(index, jr, er, lf, NOW)
             self.assertIsNone(cell_of(hist, D3, "fa"))
             self.assertIsNone(hist.last_day())
+            self.assertIsNone(hist._meta("first_day"))
             hist._write_days = real
             out = hist.rollup(index, jr, er, lf, NOW)  # the next run rolls the same days up again
             self.assertEqual(out["rows_written"], 1)
@@ -438,6 +457,44 @@ class AtomicRollupTests(unittest.TestCase):
             hist.close()
             shutil.rmtree(tmp, ignore_errors=True)
 
+
+
+class _CommitFailsOnce:
+    """A connection proxy whose first COMMIT raises, as SQLITE_FULL or an I/O error at commit time would."""
+
+    def __init__(self, con):
+        self._con = con
+        self.failed = False
+
+    def execute(self, sql, *args):
+        if sql.strip().upper() == "COMMIT" and not self.failed:
+            self.failed = True
+            raise sqlite3.OperationalError("database or disk is full")
+        return self._con.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self._con, name)
+
+
+class FailedCommitTests(unittest.TestCase):
+    """Review of #13: a failed COMMIT rolls back, so the transaction never stays open and wedges later runs."""
+
+    def test_the_next_rollup_works_after_a_failed_commit(self):
+        hist, tmp, index, jr, er, lf = make_store(journal=[jrow(1, day_at(D3))])
+        try:
+            real = hist._con
+            hist._con = _CommitFailsOnce(real)
+            with self.assertRaises(sqlite3.OperationalError):
+                hist.rollup(index, jr, er, lf, NOW)
+            self.assertFalse(real.in_transaction)
+            self.assertIsNone(hist.last_day())
+            out = hist.rollup(index, jr, er, lf, NOW)
+            self.assertEqual(out["rows_written"], 1)
+            self.assertEqual(cell_of(hist, D3, "fa"), (1, 0, 1, 0, 1, 0, 0))
+        finally:
+            hist._con = real
+            hist.close()
+            shutil.rmtree(tmp, ignore_errors=True)
 
 if __name__ == "__main__":
     unittest.main()

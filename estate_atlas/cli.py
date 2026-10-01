@@ -302,7 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--links", help="a JSON list of {source, from, rel, to, at?}")
     p.add_argument("--now", metavar="EPOCH|wall",
                    help="the instant to route at (default: the newest record, so a captured file always gives "
-                        "the same answer; 'wall' is the clock)")
+                        "the same answer, or epoch 0 when no record carries a time; 'wall' is the clock)")
     p.add_argument("--out", help="write here instead of standard output")
     p.set_defaults(run=cmd_route)
     return parser

@@ -176,6 +176,13 @@ class RendererConsistencyTests(unittest.TestCase):
                     lambda d, bad=bad: d["components"][0]["surfaces"][0]["evidence"][0].update(path=bad),
                     "control characters")
 
+    def test_dotfile_and_dot_directory_paths_stay_valid(self) -> None:
+        for good in (".github/x.yml", "a/.hidden"):
+            with self.subTest(path=good):
+                doc = minimal()
+                doc["components"][0]["surfaces"][0]["evidence"][0]["path"] = good
+                model.validate(doc)
+
     def test_empty_and_dot_segments_in_a_path_are_rejected(self) -> None:
         for bad in ("a//b.py", "docs/", "./a.py", "a/./b.py"):
             with self.subTest(path=bad):
