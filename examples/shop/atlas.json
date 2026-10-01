@@ -1,0 +1,430 @@
+{
+  "schema": "estate-atlas@2",
+  "updated": "2026-10-01",
+  "repos": {
+    "shop": {
+      "remote": "example/shop",
+      "default_branch": "main",
+      "paths": {}
+    }
+  },
+  "layers": [
+    {
+      "id": "edge",
+      "title": "Edge",
+      "summary": "What customers touch: the storefront."
+    },
+    {
+      "id": "services",
+      "title": "Services",
+      "summary": "The shop's own logic: the API and the fulfilment worker."
+    },
+    {
+      "id": "data",
+      "title": "Data",
+      "summary": "Where state lives: the job queue and the orders database."
+    },
+    {
+      "id": "external",
+      "title": "External",
+      "summary": "Providers the shop depends on but does not run."
+    }
+  ],
+  "components": [
+    {
+      "id": "web",
+      "title": "Storefront",
+      "layer": "edge",
+      "home": "shop",
+      "status": "live",
+      "summary": "Renders the shop pages and forwards every request to the API.",
+      "surfaces": [
+        {
+          "kind": "http",
+          "name": "GET /",
+          "evidence": [
+            {
+              "repo": "shop",
+              "path": "src/web.py",
+              "anchor": "def render_page"
+            }
+          ]
+        }
+      ],
+      "owns": [
+        "pages",
+        "sessions"
+      ],
+      "evidence": [
+        {
+          "repo": "shop",
+          "path": "src/web.py",
+          "anchor": "def forward_request"
+        }
+      ],
+      "instances": [
+        "service:web"
+      ]
+    },
+    {
+      "id": "api",
+      "title": "Shop API",
+      "layer": "services",
+      "home": "shop",
+      "status": "live",
+      "summary": "Takes orders, asks payments to charge, and queues fulfilment jobs.",
+      "surfaces": [
+        {
+          "kind": "http",
+          "name": "POST /orders",
+          "evidence": [
+            {
+              "repo": "shop",
+              "path": "src/api.py",
+              "anchor": "def create_order"
+            }
+          ]
+        }
+      ],
+      "owns": [
+        "orders",
+        "checkout"
+      ],
+      "evidence": [
+        {
+          "repo": "shop",
+          "path": "src/api.py",
+          "anchor": "def handle_request"
+        }
+      ],
+      "instances": [
+        "service:api"
+      ]
+    },
+    {
+      "id": "queue",
+      "title": "Job queue",
+      "layer": "data",
+      "home": "shop",
+      "status": "live",
+      "summary": "Holds fulfilment jobs between the API and the worker.",
+      "surfaces": [
+        {
+          "kind": "library",
+          "name": "jobs.enqueue",
+          "evidence": [
+            {
+              "repo": "shop",
+              "path": "src/jobs.py",
+              "anchor": "def enqueue"
+            }
+          ]
+        }
+      ],
+      "owns": [
+        "pending jobs"
+      ],
+      "evidence": [
+        {
+          "repo": "shop",
+          "path": "src/jobs.py",
+          "anchor": "JOB_MESSAGE_FIELDS"
+        }
+      ],
+      "instances": [
+        "service:queue"
+      ]
+    },
+    {
+      "id": "worker",
+      "title": "Fulfilment worker",
+      "layer": "services",
+      "home": "shop",
+      "status": "live",
+      "summary": "Takes jobs off the queue, fulfils them and writes the result to the database.",
+      "surfaces": [],
+      "owns": [
+        "job results"
+      ],
+      "evidence": [
+        {
+          "repo": "shop",
+          "path": "src/worker.py",
+          "anchor": "def run_job"
+        }
+      ],
+      "instances": [
+        "service:worker"
+      ]
+    },
+    {
+      "id": "db",
+      "title": "Orders database",
+      "layer": "data",
+      "home": "shop",
+      "status": "live",
+      "summary": "Stores every order and its status.",
+      "surfaces": [
+        {
+          "kind": "file",
+          "name": "orders table",
+          "evidence": [
+            {
+              "repo": "shop",
+              "path": "src/db.py",
+              "anchor": "ORDERS_SCHEMA"
+            }
+          ]
+        }
+      ],
+      "owns": [
+        "orders table"
+      ],
+      "evidence": [
+        {
+          "repo": "shop",
+          "path": "src/db.py",
+          "anchor": "def save_order"
+        }
+      ],
+      "instances": [
+        "service:db"
+      ]
+    },
+    {
+      "id": "payments",
+      "title": "Payments provider",
+      "layer": "external",
+      "home": "external:payments",
+      "status": "live",
+      "summary": "A third-party service that charges cards. The shop does not run it.",
+      "surfaces": [],
+      "owns": [
+        "card charges"
+      ],
+      "evidence": [],
+      "instances": [
+        "service:payments"
+      ]
+    }
+  ],
+  "contracts": [
+    {
+      "id": "shop-http",
+      "title": "Shop HTTP API",
+      "producer": "api",
+      "consumers": [
+        "web"
+      ],
+      "format": "http",
+      "status": "live",
+      "summary": "The requests the storefront sends to the API.",
+      "evidence": [
+        {
+          "repo": "shop",
+          "path": "src/api.py",
+          "anchor": "def handle_request"
+        }
+      ]
+    },
+    {
+      "id": "job-message",
+      "title": "Job message",
+      "producer": "api",
+      "consumers": [
+        "worker"
+      ],
+      "format": "json",
+      "status": "live",
+      "summary": "The fields of a fulfilment job: order id, kind and attempt number.",
+      "evidence": [
+        {
+          "repo": "shop",
+          "path": "src/jobs.py",
+          "anchor": "JOB_MESSAGE_FIELDS"
+        }
+      ]
+    },
+    {
+      "id": "orders-schema",
+      "title": "Orders schema",
+      "producer": "db",
+      "consumers": [
+        "api",
+        "worker"
+      ],
+      "format": "sqlite",
+      "status": "live",
+      "summary": "The orders table that the API and the worker read and write.",
+      "evidence": [
+        {
+          "repo": "shop",
+          "path": "src/db.py",
+          "anchor": "ORDERS_SCHEMA"
+        }
+      ]
+    },
+    {
+      "id": "charge-api",
+      "title": "Charge API",
+      "producer": "payments",
+      "consumers": [
+        "api"
+      ],
+      "format": "http",
+      "status": "documented",
+      "summary": "The provider's charge endpoint, documented by the provider.",
+      "evidence": []
+    }
+  ],
+  "flows": [
+    {
+      "id": "web-to-api",
+      "from": "web",
+      "to": "api",
+      "contract": "shop-http",
+      "trigger": "A customer opens a page or places an order.",
+      "status": "live",
+      "evidence": [
+        {
+          "repo": "shop",
+          "path": "src/web.py",
+          "anchor": "def forward_request"
+        }
+      ]
+    },
+    {
+      "id": "api-to-queue",
+      "from": "api",
+      "to": "queue",
+      "contract": "job-message",
+      "trigger": "An order is saved and needs fulfilling.",
+      "status": "live",
+      "evidence": [
+        {
+          "repo": "shop",
+          "path": "src/jobs.py",
+          "anchor": "def enqueue"
+        }
+      ],
+      "traffic": [
+        {
+          "source": "journal",
+          "producer": "api",
+          "verb": "enqueue"
+        }
+      ]
+    },
+    {
+      "id": "queue-to-worker",
+      "from": "queue",
+      "to": "worker",
+      "contract": "job-message",
+      "trigger": "A job is waiting and a worker is free.",
+      "status": "live",
+      "evidence": [
+        {
+          "repo": "shop",
+          "path": "src/jobs.py",
+          "anchor": "def deliver"
+        }
+      ],
+      "traffic": [
+        {
+          "source": "events",
+          "producer": "queue",
+          "verb": "job.delivered"
+        }
+      ]
+    },
+    {
+      "id": "worker-to-db",
+      "from": "worker",
+      "to": "db",
+      "contract": "orders-schema",
+      "trigger": "A job finishes and its result is stored.",
+      "status": "live",
+      "evidence": [
+        {
+          "repo": "shop",
+          "path": "src/worker.py",
+          "anchor": "def run_job"
+        }
+      ],
+      "traffic": [
+        {
+          "source": "journal",
+          "producer": "worker",
+          "verb": "write"
+        }
+      ]
+    },
+    {
+      "id": "api-to-db",
+      "from": "api",
+      "to": "db",
+      "contract": "orders-schema",
+      "trigger": "An order is created or read.",
+      "status": "live",
+      "evidence": [
+        {
+          "repo": "shop",
+          "path": "src/api.py",
+          "anchor": "def create_order"
+        }
+      ],
+      "traffic": [
+        {
+          "source": "journal",
+          "producer": "api",
+          "verb": "query"
+        }
+      ]
+    },
+    {
+      "id": "api-to-payments",
+      "from": "api",
+      "to": "payments",
+      "contract": "charge-api",
+      "trigger": "Checkout asks the provider to charge a card.",
+      "status": "live",
+      "evidence": [
+        {
+          "repo": "shop",
+          "path": "src/api.py",
+          "anchor": "def charge_card"
+        }
+      ],
+      "traffic": [
+        {
+          "source": "journal",
+          "producer": "api",
+          "verb": "charge"
+        }
+      ]
+    },
+    {
+      "id": "worker-heartbeat",
+      "from": "worker",
+      "to": "queue",
+      "contract": null,
+      "trigger": "Every minute the worker reports that it is alive.",
+      "status": "live",
+      "evidence": [
+        {
+          "repo": "shop",
+          "path": "src/worker.py",
+          "anchor": "def heartbeat"
+        }
+      ],
+      "traffic": [
+        {
+          "source": "events",
+          "producer": "worker",
+          "verb": "heartbeat",
+          "pulse": true
+        }
+      ]
+    }
+  ]
+}

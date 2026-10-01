@@ -1,0 +1,40 @@
+{"at": "2026-09-19T15:58:20Z", "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": "2026-09-19T17:08:20Z", "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": "2026-09-19T18:18:20Z", "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789846100, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789913600, "kind": "cache.warm", "source": "api cache", "nodes": ["service:api"]}
+{"at": 1789926500, "kind": "job.delivered", "source": "queue broker", "nodes": ["service:queue", "service:worker"]}
+{"at": 1789931600, "kind": "tick", "source": "scheduler nightly", "nodes": ["cron:nightly"]}
+{"at": 1789933100, "kind": "job.delivered", "source": "queue broker", "nodes": ["service:queue", "service:worker"]}
+{"at": 1789936700, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789938800, "kind": "cache.warm", "source": "api cache", "nodes": ["service:api"]}
+{"at": 1789939700, "kind": "job.delivered", "source": "queue broker", "nodes": ["service:queue", "service:worker"]}
+{"at": 1789940900, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789945100, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789946300, "kind": "job.delivered", "source": "queue broker", "nodes": ["service:queue", "service:worker"]}
+{"at": 1789949300, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789949600, "kind": "tick", "source": "scheduler nightly", "nodes": ["cron:nightly"]}
+{"at": 1789952900, "kind": "job.delivered", "source": "queue broker", "nodes": ["service:queue", "service:worker"]}
+{"at": 1789953500, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789957700, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789959500, "kind": "job.delivered", "source": "queue broker", "nodes": ["service:queue", "service:worker"]}
+{"at": 1789961900, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789964000, "kind": "cache.warm", "source": "api cache", "nodes": ["service:api"]}
+{"at": 1789966100, "kind": "job.delivered", "source": "queue broker", "nodes": ["service:queue", "service:worker"]}
+{"at": 1789966100, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789967600, "kind": "tick", "source": "scheduler nightly", "nodes": ["cron:nightly"]}
+{"at": 1789970300, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789972700, "kind": "job.delivered", "source": "queue broker", "nodes": ["service:queue", "service:worker"]}
+{"at": 1789974500, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789978700, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789979300, "kind": "job.delivered", "source": "queue broker", "nodes": ["service:queue", "service:worker"]}
+{"at": 1789982900, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789985600, "kind": "tick", "source": "scheduler nightly", "nodes": ["cron:nightly"]}
+{"at": 1789985900, "kind": "job.delivered", "source": "queue broker", "nodes": ["service:queue", "service:worker"]}
+{"at": 1789987100, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789989200, "kind": "cache.warm", "source": "api cache", "nodes": ["service:api"]}
+{"at": 1789991300, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789992500, "kind": "job.delivered", "source": "queue broker", "nodes": ["service:queue", "service:worker"]}
+{"at": 1789995500, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
+{"at": 1789999100, "kind": "job.delivered", "source": "queue broker", "nodes": ["service:queue", "service:worker"]}
+{"at": 1789999700, "kind": "heartbeat", "source": "worker pool-a", "nodes": ["service:worker"]}
