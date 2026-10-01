@@ -1,0 +1,247 @@
+{
+  "schema": "estate-atlas@2",
+  "updated": "2026-10-01",
+  "repos": {
+    "workspace": {
+      "remote": "example/workspace",
+      "default_branch": "main",
+      "paths": {}
+    },
+    "assistant": {
+      "remote": "example/assistant",
+      "default_branch": "main",
+      "paths": {}
+    },
+    "operations": {
+      "remote": "example/operations",
+      "default_branch": "main",
+      "paths": {}
+    },
+    "focus": {
+      "remote": "example/focus",
+      "default_branch": "main",
+      "paths": {}
+    },
+    "cockpit": {
+      "remote": "example/cockpit",
+      "default_branch": "main",
+      "paths": {}
+    }
+  },
+  "layers": [
+    {
+      "id": "human",
+      "title": "Human work",
+      "summary": "Intent, attention and outcomes."
+    },
+    {
+      "id": "operations",
+      "title": "Operations",
+      "summary": "Attempts and their operator view."
+    }
+  ],
+  "components": [
+    {
+      "id": "workspace",
+      "title": "Human workspace",
+      "home": "workspace",
+      "layer": "human",
+      "status": "planned",
+      "summary": "Proposed record of human intent; a worker result does not itself complete a commitment.",
+      "surfaces": [],
+      "owns": [
+        "human commitments",
+        "authoritative operation receipts"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "assistant",
+      "title": "Channel assistant",
+      "home": "assistant",
+      "layer": "human",
+      "status": "planned",
+      "summary": "Proposed interchangeable channel adapter; text content does not grant authority.",
+      "surfaces": [],
+      "owns": [
+        "channel delivery state"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "focus",
+      "title": "Focus surface",
+      "home": "focus",
+      "layer": "human",
+      "status": "planned",
+      "summary": "Proposed read projection with explicit admission, separate from execution scheduling.",
+      "surfaces": [],
+      "owns": [
+        "attention membership and order"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "operations",
+      "title": "Execution runtime",
+      "home": "operations",
+      "layer": "operations",
+      "status": "planned",
+      "summary": "Existing-runtime role in this fictional design; not a claim that an implementation exists.",
+      "surfaces": [],
+      "owns": [
+        "attempt admission and progress"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "cockpit",
+      "title": "Operations cockpit",
+      "home": "cockpit",
+      "layer": "operations",
+      "status": "planned",
+      "summary": "Proposed reader of attempt evidence; not the human-work database or another executor.",
+      "surfaces": [],
+      "owns": [
+        "operator view state"
+      ],
+      "evidence": []
+    }
+  ],
+  "contracts": [
+    {
+      "id": "assistant.capture/1",
+      "title": "Capture request",
+      "producer": "assistant",
+      "consumers": [
+        "workspace"
+      ],
+      "format": "json",
+      "status": "planned",
+      "summary": "Scoped operation identity and original context; durable acceptance needs a workspace receipt.",
+      "evidence": []
+    },
+    {
+      "id": "workspace.receipt/1",
+      "title": "Operation receipt",
+      "producer": "workspace",
+      "consumers": [
+        "assistant"
+      ],
+      "format": "json",
+      "status": "planned",
+      "summary": "Authoritative accepted result or a queryable uncertain outcome, not local queue success.",
+      "evidence": []
+    },
+    {
+      "id": "workspace.intent/1",
+      "title": "Work intent",
+      "producer": "workspace",
+      "consumers": [
+        "operations"
+      ],
+      "format": "json",
+      "status": "planned",
+      "summary": "Bounded requested investigation and acceptance criteria; not a completed human task.",
+      "evidence": []
+    },
+    {
+      "id": "operations.result/1",
+      "title": "Attempt result",
+      "producer": "operations",
+      "consumers": [
+        "workspace",
+        "cockpit"
+      ],
+      "format": "json",
+      "status": "planned",
+      "summary": "Versioned attempt result with evidence; human completion requires separate authority and criteria.",
+      "evidence": []
+    },
+    {
+      "id": "workspace.attention/1",
+      "title": "Attention source facts",
+      "producer": "workspace",
+      "consumers": [
+        "focus",
+        "cockpit"
+      ],
+      "format": "json",
+      "status": "planned",
+      "summary": "Authorized complete read projection with explicit revision and freshness; no implied rank.",
+      "evidence": []
+    }
+  ],
+  "flows": [
+    {
+      "id": "capture",
+      "from": "assistant",
+      "to": "workspace",
+      "contract": "assistant.capture/1",
+      "trigger": "explicit owner capture",
+      "status": "planned",
+      "gap": "Implement authenticated ingress, scoped idempotency and lost-acknowledgement reconciliation.",
+      "evidence": []
+    },
+    {
+      "id": "acknowledge",
+      "from": "workspace",
+      "to": "assistant",
+      "contract": "workspace.receipt/1",
+      "trigger": "accepted operation or receipt query",
+      "status": "planned",
+      "gap": "Persist and authorize receipt reads; never acknowledge only an in-memory queue.",
+      "evidence": []
+    },
+    {
+      "id": "delegate",
+      "from": "workspace",
+      "to": "operations",
+      "contract": "workspace.intent/1",
+      "trigger": "authorized bounded handoff",
+      "status": "planned",
+      "gap": "Bind one existing runtime and prove admission deduplication, scope and cancellation.",
+      "evidence": []
+    },
+    {
+      "id": "reconcile",
+      "from": "operations",
+      "to": "workspace",
+      "contract": "operations.result/1",
+      "trigger": "attempt reaches a reportable state",
+      "status": "planned",
+      "gap": "Prove duplicate and out-of-order result handling; do not complete the human commitment on worker exit.",
+      "evidence": []
+    },
+    {
+      "id": "observe",
+      "from": "operations",
+      "to": "cockpit",
+      "contract": "operations.result/1",
+      "trigger": "operator inspects the attempt",
+      "status": "planned",
+      "gap": "Bind trace identity and privacy without turning telemetry into authority.",
+      "evidence": []
+    },
+    {
+      "id": "focus",
+      "from": "workspace",
+      "to": "focus",
+      "contract": "workspace.attention/1",
+      "trigger": "explicitly bound complete snapshot",
+      "status": "planned",
+      "gap": "Implement authorized reads, cache revocation and explicit admission; preserve separate order.",
+      "evidence": []
+    },
+    {
+      "id": "attention",
+      "from": "workspace",
+      "to": "cockpit",
+      "contract": "workspace.attention/1",
+      "trigger": "operator requests human attention summary",
+      "status": "planned",
+      "gap": "Bound and redact the summary; retain unavailable and stale states.",
+      "evidence": []
+    }
+  ]
+}
