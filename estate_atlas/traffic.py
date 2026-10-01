@@ -928,7 +928,8 @@ def route_files(doc: dict[str, Any], journal: Any = None, events: Any = None, li
     `journal` is a JSONL file of `{id?, at, producer, verb, actor, subject}`, `events` a JSONL file of
     `{id?, at, kind, source, nodes}`, `links` a JSON list of `{source, from, rel, to, at?}`. Missing ids are
     assigned. With `now=None` the snapshot is taken at the newest record's time, so routing a captured file
-    gives the same answer every time; pass `time.time()` to route against the wall clock.
+    gives the same answer every time; pass `time.time()` to route against the wall clock. With no `now` and no
+    timestamped record the snapshot is taken at epoch 0, so the answer is still byte-stable.
     """
     jrows = _with_ids(_read_jsonl(journal)) if journal is not None else []
     erows = _with_ids(_read_jsonl(events)) if events is not None else []
@@ -948,7 +949,7 @@ def route_files(doc: dict[str, Any], journal: Any = None, events: Any = None, li
     if now is None:
         stamps = [r["at"] for r in jrows + erows if isinstance(r["at"], float)]
         stamps += [t for t in (parse_at(link.get("at")) for _, link in pairs) if t is not None]
-        clock = max(stamps) if stamps else time.time()
+        clock = max(stamps) if stamps else 0.0
     else:
         clock = float(now)
     sha = hashlib.sha256(json.dumps({"components": doc.get("components"), "flows": doc.get("flows")},

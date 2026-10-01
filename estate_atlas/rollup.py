@@ -145,11 +145,15 @@ class TrafficHistory:
                 "SELECT DISTINCT day FROM flow_day WHERE day >= ? AND day <= ?",
                 (first, yesterday)).fetchall()} if missing else set()
             missing = [d for d in missing if d not in present]
-            if self._meta("first_day") is None:
-                self._con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('first_day', ?)", (first,))
             if not missing:
-                self._con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('last_day', ?)",
-                                  (yesterday,))
+                # nothing to route: the whole days are already stored, so seal them in one transaction
+                self._con.execute("BEGIN IMMEDIATE")
+                try:
+                    self._seal(first, yesterday)
+                except BaseException:
+                    self._con.execute("ROLLBACK")
+                    raise
+                self._con.execute("COMMIT")
                 return {"days_written": 0, "ms": (time.perf_counter() - t0) * 1000.0}
             wanted = set(missing)
             since = _day_start(missing[0])
@@ -184,7 +188,7 @@ class TrafficHistory:
                     return {"days_written": 0, "rows_written": 0,
                             "ms": (time.perf_counter() - t0) * 1000.0,
                             "skipped": "index changed during rollup"}
-                written = self._write_days(acc, yesterday, today_start)
+                written = self._write_days(acc, first, yesterday, today_start)
             except BaseException:
                 self._con.execute("ROLLBACK")
                 raise
@@ -192,9 +196,16 @@ class TrafficHistory:
             return {"days_written": len(missing), "rows_written": written,
                     "ms": (time.perf_counter() - t0) * 1000.0}
 
-    def _write_days(self, acc: dict[tuple[str, str], dict[str, int]], yesterday: str,
+    def _seal(self, first: str, yesterday: str) -> None:
+        """`first_day` (kept once set) and `last_day`, inside the caller's transaction: a rollup that is skipped
+        or fails leaves neither, so `days_stored()` never counts days that were not sealed."""
+        assert self._con is not None
+        self._con.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('first_day', ?)", (first,))
+        self._con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('last_day', ?)", (yesterday,))
+
+    def _write_days(self, acc: dict[tuple[str, str], dict[str, int]], first: str, yesterday: str,
                     today_start: float) -> int:
-        """The rollup's rows, `last_day` and retention, inside the caller's transaction."""
+        """The rollup's rows, `first_day`, `last_day` and retention, inside the caller's transaction."""
         assert self._con is not None
         written = 0
         for (day, fid), cell in sorted(acc.items()):
@@ -207,8 +218,7 @@ class TrafficHistory:
                  cell["inferred"], cell["journal"], cell["events"], cell["links"]))
             if cur.rowcount > 0:
                 written += 1  # rows; the answer below counts days
-        self._con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('last_day', ?)",
-                          (yesterday,))
+        self._seal(first, yesterday)
         cutoff = _day_of(today_start - RETENTION_DAYS * DAY_S)
         self._con.execute("DELETE FROM flow_day WHERE day < ?", (cutoff,))
         return written

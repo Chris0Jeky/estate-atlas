@@ -445,6 +445,27 @@ class StyleTests(unittest.TestCase):
                 docs.Style(page_href=bad)
         docs.Style(page_href="site/map.html#top")
 
+    def test_page_href_rejects_every_control_character(self) -> None:
+        for code in list(range(32)) + [127]:
+            bad = "a%sb" % chr(code)
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                docs.Style(page_href=bad)
+        docs.Style(page_href="site/map.html#top")
+
+    def test_write_returns_2_when_the_traffic_snapshot_time_overflows(self) -> None:
+        for generated in (1e300, -1e300):
+            with self.subTest(generated=generated), tempfile.TemporaryDirectory() as tmp:
+                atlas_path, doc_path = empty_doc(Path(tmp), fixture_atlas())
+                bad = traffic_doc()
+                bad["generated"] = generated
+                traffic_path = Path(tmp) / "traffic.json"
+                traffic_path.write_text(json.dumps(bad), encoding="utf-8")
+                before = doc_path.read_text(encoding="utf-8")
+                code, message = docs.write(atlas_path, doc_path, traffic_path)
+                self.assertEqual(code, 2, message)
+                self.assertTrue(message)
+                self.assertEqual(doc_path.read_text(encoding="utf-8"), before)
+
     def test_switching_style_on_a_default_written_doc_refills_the_traffic_placeholder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             atlas_path, doc_path = empty_doc(Path(tmp), fixture_atlas())

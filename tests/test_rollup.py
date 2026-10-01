@@ -360,6 +360,10 @@ class BadPathTests(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _first_backfill_day(now_f):
+    return H._day_of(float(int(now_f // DAY) * DAY) - H.BACKFILL_DAYS * DAY)
+
+
 class _FlippingIndex:
     """A real index whose rules vanish while a rollup is routing (another thread's refresh failed)."""
 
@@ -397,6 +401,21 @@ class IndexChangedTests(unittest.TestCase):
             hist.close()
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_a_skipped_rollup_leaves_no_first_day(self):
+        hist, tmp, index, jr, er, lf = make_store(journal=[jrow(1, day_at(D3))])
+        try:
+            out = hist.rollup(_FlippingIndex(index), jr, er, lf, NOW)
+            self.assertEqual(out["skipped"], "index changed during rollup")
+            self.assertIsNone(hist._meta("first_day"))
+            self.assertIsNone(hist._meta("last_day"))
+            self.assertEqual(hist.days_stored(), 0)
+            hist.rollup(index, jr, er, lf, NOW + 5 * DAY)  # the retry lands days later
+            self.assertEqual(hist._meta("first_day"), _first_backfill_day(NOW + 5 * DAY))
+            self.assertEqual(hist.last_day(), H._yesterday(NOW + 5 * DAY))
+        finally:
+            hist.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 class OwnHistoryTests(unittest.TestCase):
     """A flow is flagged only on 35 days of its own history (events are kept 14 days: a backfill must not
@@ -412,7 +431,6 @@ class OwnHistoryTests(unittest.TestCase):
         self.assertEqual(fading, [])
 
 
-
 class AtomicRollupTests(unittest.TestCase):
     """A rollup is one transaction: a failure mid-write leaves no half-written day."""
 
@@ -421,8 +439,8 @@ class AtomicRollupTests(unittest.TestCase):
         try:
             real = hist._write_days
 
-            def boom(acc, yesterday, today_start):
-                real(acc, yesterday, today_start)  # the rows and last_day are written...
+            def boom(*args):
+                real(*args)  # the rows, first_day and last_day are written...
                 raise RuntimeError("disk full")    # ...then the write fails
 
             hist._write_days = boom
@@ -430,6 +448,7 @@ class AtomicRollupTests(unittest.TestCase):
                 hist.rollup(index, jr, er, lf, NOW)
             self.assertIsNone(cell_of(hist, D3, "fa"))
             self.assertIsNone(hist.last_day())
+            self.assertIsNone(hist._meta("first_day"))
             hist._write_days = real
             out = hist.rollup(index, jr, er, lf, NOW)  # the next run rolls the same days up again
             self.assertEqual(out["rows_written"], 1)

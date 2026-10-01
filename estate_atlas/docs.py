@@ -63,8 +63,10 @@ class Style:
         for name in ("generated_line", "refresh_line", "write_hint"):
             if MARK_RE.search(getattr(self, name)):
                 raise ValueError(f"Style.{name} must not contain an atlas:begin or atlas:end marker")
-        if any(c.isspace() for c in self.page_href) or any(c in "()[]<>\"'" for c in self.page_href):
-            raise ValueError("Style.page_href must not contain whitespace, brackets, parentheses or quotes")
+        if (any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in self.page_href)
+                or any(c in "()[]<>\"'" for c in self.page_href)):
+            raise ValueError("Style.page_href must not contain whitespace, control characters, brackets, "
+                             "parentheses or quotes")
 
 
 DEFAULT_STYLE = Style()
@@ -498,7 +500,7 @@ def write(atlas_path: Path, doc_path: Path,
             return 2, "traffic file must hold a JSON object"
         try:
             blocks["traffic"] = traffic_block(atlas, traffic_doc, style=style)
-        except ValueError as exc:
+        except (ValueError, ArithmeticError, OSError) as exc:
             return 2, "%s" % (exc,)
     elif "traffic" in current and _traffic_inner_empty(current["traffic"], style=style):
         blocks["traffic"] = traffic_block(atlas, None, style=style)
