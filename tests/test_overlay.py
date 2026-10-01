@@ -523,6 +523,14 @@ class CliTests(TempCase):
         self.assertEqual((code, out), (0, ""))
         self.assertIn("# A tour of a small online store", target.read_text(encoding="utf-8"))
 
+    def test_an_empty_overlay_path_fails_closed(self):
+        for mode in (("--md",), ()):
+            target = self.tmp / "TOUR.md"
+            code, out, _ = run("tour", ATLAS, *mode, "--overlay", "", "--out", str(target))
+            self.assertEqual(code, 2)
+            self.assertEqual(out, "")
+            self.assertFalse(target.exists())
+
     def test_without_an_overlay_nothing_changes(self):
         code, out, _ = run("tour", ATLAS, "--md")
         self.assertEqual(code, 0)
