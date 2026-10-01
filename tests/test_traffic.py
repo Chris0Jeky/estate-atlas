@@ -509,6 +509,17 @@ class LastAtTests(unittest.TestCase):
         v = ti.verify()
         self.assertTrue(v["equal"], v)
 
+    def test_a_snapshot_after_an_hour_boundary_without_refresh_agrees_with_verify(self):
+        ti, clock = self._index()
+        # The declared row is 100 h old; move the clock so it falls below the window floor
+        # without a refresh: the counts drop it at snapshot time, and last_at must too.
+        clock.t += 69 * H
+        fl = ti.snapshot()["flows"]["fl"]
+        self.assertIsNone(fl["last_at"])
+        self.assertEqual(fl["pulse_last_at"], self.PULSE_NEWEST)
+        v = ti.verify()
+        self.assertTrue(v["equal"], v)
+
     def test_verify_compares_last_at(self):
         ti, _ = self._index()
         ti._flow_newest["fl"][(False, "journal")] = self.T_DECLARED + 5

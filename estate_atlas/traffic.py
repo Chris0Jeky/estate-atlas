@@ -670,8 +670,13 @@ class TrafficIndex:
                     if at > oa:
                         slot["example"] = crossing
 
-    def _last_at(self, fid: str, pulse: bool) -> float | None:
-        vals = [v for (is_pulse, _src), v in self._flow_newest.get(fid, {}).items() if is_pulse == pulse]
+    def _last_at(self, fid: str, pulse: bool, floor: float) -> float | None:
+        """The newest crossing of one basis class still inside the window at snapshot time.
+
+        `floor` is the snapshot's window start, the same one the counts use, so a snapshot taken
+        after an hour boundary without a refresh never reports a crossing it no longer counts."""
+        vals = [v for (is_pulse, _src), v in self._flow_newest.get(fid, {}).items()
+                if is_pulse == pulse and v >= floor]
         return max(vals) if vals else None
 
     # -- snapshot -----------------------------------------------------------------
@@ -728,11 +733,11 @@ class TrafficIndex:
                 heat = "silent"
             flows[fid] = {"status": meta["status"], "rules": meta["rules"],
                           "d24": tot["d24"], "d7": tot["d7"],
-                          "last_at": self._last_at(fid, False),
+                          "last_at": self._last_at(fid, False, floor),
                           "heat": heat, "by_basis": tot["by_basis"],
                           "by_source": tot["by_source"],
                           "pulse_d7": tot["pulse_d7"],
-                          "pulse_last_at": self._last_at(fid, True)}
+                          "pulse_last_at": self._last_at(fid, True, floor)}
         coverage = {"records": 0, "declared": 0, "inferred": 0, "internal": 0,
                     "unrouted": 0, "ambiguous": 0, "pulse": 0}
         src_counts = {"journal": 0, "events": 0, "links": 0}
