@@ -189,9 +189,34 @@ def cmd_explain(args: argparse.Namespace) -> int:
     return OK
 
 
+def _public_tour(args: argparse.Namespace, atlas: dict[str, Any], traffic: dict[str, Any] | None) -> str:
+    """The tour of the atlas as the overlay words it; UsageError (exit 2) when anything private would leak."""
+    from . import explain, overlay
+    if args.check:
+        raise UsageError("--overlay cannot be combined with --check")
+    spec = overlay.load_overlay(args.overlay)
+    overlay.validate_overlay(spec, atlas)
+    public = overlay.apply_overlay(atlas, spec)
+    public_traffic = overlay.apply_overlay_traffic(traffic, spec) if traffic is not None else None
+    if args.md:
+        text = explain.render_tour_md(public, public_traffic)
+        if "title" in spec:
+            text = "# A tour of " + spec["title"] + text[text.index("\n"):]
+    else:
+        text = _dump(explain.tour(public, public_traffic))
+    subs, words = overlay.leak_terms(atlas, spec)
+    found = overlay.leaks(text, subs, words)
+    if found:
+        raise UsageError("the public tour leaks private terms: %s" % ", ".join(repr(t) for t in found))
+    return text
+
+
 def cmd_tour(args: argparse.Namespace) -> int:
     from . import explain
     atlas = _parsed(args.atlas)
+    if args.overlay:
+        _emit(_public_tour(args, atlas, _traffic_doc(args.traffic)), args.out)
+        return OK
     if args.check:
         ok, message = explain.check_tour(Path(args.check), atlas)
         if ok:
@@ -292,6 +317,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--md", action="store_true", help="Markdown instead of JSON")
     p.add_argument("--traffic", help="an estate-atlas-traffic@1 file")
     p.add_argument("--check", metavar="DOC", help="exit 1 when this tour doc is stale")
+    p.add_argument("--overlay", metavar="FILE",
+                   help="an estate-atlas-overlay@1 file: publish the tour in public wording, and exit 2 "
+                        "(printing nothing) when any private term leaks")
     p.add_argument("--out", help="write here instead of standard output")
     p.set_defaults(run=cmd_tour)
 

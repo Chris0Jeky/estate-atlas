@@ -1,0 +1,34 @@
+{
+  "schema": "estate-atlas-overlay@1",
+  "title": "a small online store",
+  "denylist": ["internal-only"],
+  "layers": {
+    "edge": {"id": "front", "title": "Customer side", "summary": "What customers touch: the public site."},
+    "services": {"id": "core", "title": "Core logic", "summary": "The store's own logic: ordering and fulfilment."},
+    "data": {"id": "state", "title": "Stored state", "summary": "Where state lives: the task buffer and the order store."},
+    "external": {"id": "partners", "title": "Partners", "summary": "Providers the store depends on but does not run."}
+  },
+  "components": {
+    "web": {"id": "customer-site", "title": "Customer site", "summary": "Serves pages to customers and passes each request inward.", "home": "main-repo"},
+    "api": {"id": "orders-service", "title": "Order service", "summary": "Takes orders, asks the card processor to charge, and schedules fulfilment tasks.", "home": "main-repo"},
+    "queue": {"id": "task-buffer", "title": "Task buffer", "summary": "Holds pending tasks between ordering and fulfilment.", "home": "main-repo"},
+    "worker": {"id": "fulfiller", "title": "Fulfiller", "summary": "Picks up tasks, completes them and records the outcome.", "home": "main-repo"},
+    "db": {"id": "order-store", "title": "Order store", "summary": "Keeps every order and its progress.", "home": "main-repo"},
+    "payments": {"id": "card-processor", "title": "Card processor", "summary": "A third-party service that charges cards. It is not run here.", "home": "vendor-service"}
+  },
+  "contracts": {
+    "shop-http": {"id": "site-calls", "title": "Site calls", "summary": "The requests the customer site sends inward."},
+    "job-message": {"id": "task-record", "title": "Task record", "summary": "The fields of a fulfilment task: order number, kind and attempt number."},
+    "orders-schema": {"id": "order-records", "title": "Order records", "summary": "The order tables that ordering and fulfilment read and write."},
+    "charge-api": {"id": "charge-call", "title": "Charge call", "summary": "The processor's charge endpoint, documented by the processor; not wired yet."}
+  },
+  "flows": {
+    "web-to-api": {"id": "site-to-orders", "trigger": "A customer opens a page or places an order."},
+    "api-to-queue": {"id": "orders-to-buffer", "trigger": "An order is saved and needs fulfilling."},
+    "queue-to-worker": {"id": "buffer-to-fulfiller", "trigger": "A task is waiting and a fulfiller is free."},
+    "worker-to-db": {"id": "fulfiller-to-store", "trigger": "A task finishes and its outcome is stored."},
+    "api-to-db": {"id": "orders-to-store", "trigger": "An order is created or read."},
+    "api-to-payments": {"id": "orders-to-processor", "trigger": "Checkout asks the processor to charge a card."},
+    "worker-heartbeat": {"id": "fulfiller-pulse", "trigger": "Every minute the fulfiller reports that it is alive."}
+  }
+}
