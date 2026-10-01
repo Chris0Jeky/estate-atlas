@@ -157,12 +157,18 @@ JSON file that gives every layer, component, contract and flow public wording an
   crosschecks, and drops everything else: `unrouted` examples, `rule_gaps`, sources, coverage and any flow the
   overlay does not name. A non-string `flow` in `off_status` is an `AtlasError` (exit 2).
 - **Leak check.** `leak_terms(doc, overlay)` returns what the output must not contain. As substrings: the overlay's
-  `denylist`, every original title that differs from its public title, every original summary, flow trigger and flow
+  `denylist`, every original title that differs from its public title (and has at least 4 characters, `MIN_TITLE_SUBSTRING`), every original summary, flow trigger and flow
   gap that differs from its public text (only when it is at least 12 characters, `MIN_TEXT_TERM`, so a short common
   phrase does not flood the check), and every repo `remote`. As whole words, where only ASCII letters and digits are
   word characters, so `-` and `_` split tokens (`payments-gateway-v2` holds `payments-gateway`): every original id
-  that differs from its public id, every repo key and every original `home` that differs from its label. A word that
-  the overlay itself publishes (as an id or label) is left out. `leaks(text, denylist, words=())` folds the text and
+  that differs from its public id, every original title shorter than 4 characters (a private `DB` flags the word `db`, not `feedback`),
+  every repo key and every original `home` that differs from its label. A word that
+  the overlay itself publishes (as an id or label) is left out. A derived title or text term (never a `denylist`
+  term or a repo `remote`) is also left out when, folded, it equals a whole text the overlay publishes unchanged: an
+  entry's public title, summary, trigger, gap or home label that equals that entry's original. So a layer renamed from
+  `Core` does not refuse a component whose public title is still `Core`. It cannot whitelist a private term the overlay
+  does not publish verbatim: it needs equality with a whole published text (`Core` does not excuse `Core services`),
+  and a private text copied into another entry's public text, where that entry's original differs, is still a leak. `leaks(text, denylist, words=())` folds the text and
   every term first (NFKC, `casefold()`, whitespace runs collapsed to one space) and returns the terms found, sorted.
   `find_leaks` runs it where escaping cannot hide anything: on every string of the overlaid document and the overlay
   title (before any escaping), on the rendered output, on the Markdown with `\|` and HTML entities undone, and on

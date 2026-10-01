@@ -389,6 +389,108 @@ class OriginalTextTermTests(unittest.TestCase):
         self.assertTrue(any(term == doc["components"][0]["summary"] for term, _ in found), found)
 
 
+class ShortTitleAndPublishedTextTests(unittest.TestCase):
+    """Issue #18: no false refusal from a short original title or from text the overlay publishes unchanged."""
+
+    def test_a_short_title_matches_as_a_word_not_a_substring(self):
+        doc, spec = shop(), fixture()
+        doc["components"][0]["title"] = "DB"
+        subs, words = overlay.leak_terms(doc, spec)
+        self.assertNotIn("DB", subs)
+        self.assertIn("DB", words)
+        self.assertEqual(overlay.leaks("Send us feedback on the website.", subs, words), [])
+        self.assertEqual(overlay.leaks("the db layer", subs, words).count("DB"), 1)
+        self.assertEqual(overlay.leaks("the DB.", subs, words).count("DB"), 1)
+        self.assertEqual(overlay.leaks("pre-db-post", subs, words).count("DB"), 1)  # a hyphen ends a word
+
+    def test_a_short_title_is_folded_before_its_length_counts(self):
+        doc, spec = shop(), fixture()
+        doc["components"][0]["title"] = "\uff24\uff22"  # fullwidth "DB": two characters once folded
+        subs, words = overlay.leak_terms(doc, spec)
+        self.assertIn("\uff24\uff22", words)
+        self.assertNotIn("\uff24\uff22", subs)
+
+    def test_a_title_of_four_characters_is_still_a_substring(self):
+        doc, spec = shop(), fixture()
+        doc["components"][0]["title"] = "Core"
+        subs, words = overlay.leak_terms(doc, spec)
+        self.assertIn("Core", subs)
+        self.assertNotIn("Core", words)
+        self.assertEqual(overlay.leaks("the hardcore tour", subs, words), ["Core"])
+
+    def test_a_short_title_that_fails_closed_through_the_cli_path(self):
+        doc, spec = shop(), fixture()
+        doc["components"][0]["title"] = "DB"
+        spec["components"]["api"]["summary"] = "Reads from the db layer."
+        public = overlay.apply_overlay(doc, spec)
+        found = overlay.find_leaks(doc, spec, public, explain.render_tour_md(public), markdown=True)
+        self.assertIn("DB", [term for term, _ in found])
+        spec["components"]["api"]["summary"] = "Collects customer feedback."
+        public = overlay.apply_overlay(doc, spec)
+        found = overlay.find_leaks(doc, spec, public, explain.render_tour_md(public), markdown=True)
+        self.assertNotIn("DB", [term for term, _ in found])
+
+    def core_case(self, *, component_original: str):
+        """A layer titled Core, renamed; a component whose public title is Core and whose original is as given."""
+        doc, spec = shop(), fixture()
+        doc["layers"][0]["title"] = "Core"
+        doc["components"][0]["title"] = component_original
+        spec["components"]["web"]["title"] = "Core"
+        public = overlay.apply_overlay(doc, spec)
+        found = overlay.find_leaks(doc, spec, public, explain.render_tour_md(public), markdown=True)
+        return overlay.leak_terms(doc, spec), found
+
+    def test_a_layer_title_renamed_while_a_component_still_publishes_it_passes(self):
+        (subs, _), found = self.core_case(component_original="Core")
+        self.assertNotIn("Core", subs)
+        self.assertEqual([hit for hit in found if hit[0] == "Core"], [])
+
+    def test_a_private_text_copied_into_another_entrys_public_text_is_still_refused(self):
+        # the component's original is something else, so its public "Core" is a copy of the private layer title
+        (subs, _), found = self.core_case(component_original="Storefront")
+        self.assertIn("Core", subs)
+        self.assertTrue(any(hit[0] == "Core" for hit in found), found)
+
+    def test_the_exemption_is_whole_text_equality_never_a_substring(self):
+        doc, spec = shop(), fixture()
+        doc["layers"][0]["title"] = "Core"
+        doc["components"][0]["title"] = "Core services"
+        spec["components"]["web"]["title"] = "Core services"
+        subs, _ = overlay.leak_terms(doc, spec)
+        self.assertIn("Core", subs)  # "Core" is only a part of the published "Core services"
+
+    def test_a_private_term_no_entry_publishes_is_still_refused(self):
+        doc, spec = shop(), fixture()
+        doc["layers"][0]["title"] = "Secret ring"
+        subs, words = overlay.leak_terms(doc, spec)
+        self.assertIn("Secret ring", subs)
+        public = overlay.apply_overlay(doc, spec)
+        found = overlay.find_leaks(doc, spec, public, explain.render_tour_md(public) + " the secret ring ",
+                                   markdown=True)
+        self.assertIn("Secret ring", [term for term, _ in found])
+
+    def test_a_published_summary_trigger_gap_and_home_label_also_count(self):
+        doc, spec = shop(), fixture()
+        text = "Shared wording that both entries publish."
+        doc["components"][0]["summary"] = text
+        spec["components"]["web"]["summary"] = text
+        doc["components"][1]["summary"] = text  # another entry's private original, the same as the unchanged one
+        subs, _ = overlay.leak_terms(doc, spec)
+        self.assertNotIn(text, subs)
+
+    def test_an_explicit_denylist_term_is_never_exempt(self):
+        doc, spec = shop(), fixture()
+        doc["components"][0]["title"] = "Storefront"
+        spec["components"]["web"]["title"] = "Storefront"
+        spec["denylist"] = ["Storefront"]
+        subs, _ = overlay.leak_terms(doc, spec)
+        self.assertIn("Storefront", subs)
+
+    def test_the_shop_round_trip_still_exits_0(self):
+        code, out, err = run("tour", ATLAS, "--md", "--overlay", str(FIXTURE))
+        self.assertEqual((code, err), (0, ""), err)
+
+
 class FindLeaksTests(unittest.TestCase):
     def setUp(self):
         self.doc, self.spec = shop(), fixture()
