@@ -31,6 +31,7 @@ def is_check_schema(value: Any) -> bool:
 
 # The same sets as model.py, so every atlas that validates also renders.
 COMPONENT_STATUSES = ("live", "partial", "planned", "retired")
+CONTRACT_STATUSES = ("live", "partial", "planned", "retired")
 FLOW_STATUSES = ("live", "partial", "documented", "planned", "absent")
 GAP_ORDER = ("absent", "planned", "documented", "partial")
 EXPECT_STATUSES = ("planned", "documented", "absent")
@@ -426,6 +427,8 @@ def parse_atlas(data: Any) -> dict[str, Any]:
             if consumer not in comp_ids:
                 raise AtlasError("%s names an unknown consumer component" % (where,))
         cstatus = _need_line(item.get("status"), where + ".status", 40)
+        if cstatus not in CONTRACT_STATUSES:
+            raise AtlasError("%s.status must be one of %s" % (where, list(CONTRACT_STATUSES)))
         cexpect = _need_expect(item.get("expect"), where, cstatus) if "expect" in item else []
         contracts.append({
             "id": kid,
