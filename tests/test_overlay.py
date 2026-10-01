@@ -306,7 +306,8 @@ class LeakTests(unittest.TestCase):
         self.assertEqual(overlay.leaks("orders-api and api_v2", [], ["api"]), ["api"])
         self.assertEqual(overlay.leaks("see payments-gateway-v2 now", [], ["payments-gateway"]), ["payments-gateway"])
         self.assertEqual(overlay.leaks("ledger_store", [], ["ledger"]), ["ledger"])
-        self.assertEqual(overlay.leaks("ledgerstore and ledger9", [], ["ledger"]), [])
+        self.assertEqual(overlay.leaks("ledgerstore", [], ["ledger"]), [])
+        self.assertEqual(overlay.leaks("ledger9", [], ["ledger"]), ["ledger"])  # one trailing digit: a numbered form
 
     def test_terms_cover_the_ids_titles_remotes_and_repo_keys(self):
         subs, words = overlay.leak_terms(shop(), fixture())
@@ -489,6 +490,22 @@ class ShortTitleAndPublishedTextTests(unittest.TestCase):
     def test_the_shop_round_trip_still_exits_0(self):
         code, out, err = run("tour", ATLAS, "--md", "--overlay", str(FIXTURE))
         self.assertEqual((code, err), (0, ""), err)
+
+    def test_a_case_only_rename_does_not_exempt_the_private_text(self):
+        doc, ovl = shop(), fixture()
+        comp = doc["components"][0]
+        entry = ovl["components"][comp["id"]]
+        entry["summary"] = comp["summary"].upper()
+        subs, words = overlay.leak_terms(doc, ovl)
+        self.assertIn(comp["summary"], subs)
+        self.assertTrue(overlay.leaks(entry["summary"], subs, words))
+
+    def test_plural_and_numbered_forms_of_a_short_private_title_are_caught(self):
+        subs, words = [], ["vvm"]
+        for text in ("talks to the VVMs", "the VVM2 node", "the vvm is down"):
+            self.assertTrue(overlay.leaks(text, subs, words), text)
+        for text in ("feedback", "a vvmxy word"):
+            self.assertEqual(overlay.leaks(text, subs, words), [], text)
 
 
 class FindLeaksTests(unittest.TestCase):

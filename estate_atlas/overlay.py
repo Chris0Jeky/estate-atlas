@@ -285,7 +285,9 @@ def _published_unchanged(doc: dict[str, Any], overlay: dict[str, Any]) -> set[st
                 continue
             for name in names:
                 original, public = item.get(name), entry.get(name)
-                if isinstance(original, str) and isinstance(public, str) and fold(original) == fold(public):
+                # raw equality, not folded: a case-, width- or whitespace-only "rename" is still a rename and
+                # must not exempt the private text it copies (review of #19)
+                if isinstance(original, str) and isinstance(public, str) and original == public:
                     same.add(fold(public))
     return same
 
@@ -358,7 +360,9 @@ def fold(text: str) -> str:
 
 def _word(folded_term: str) -> re.Pattern[str]:
     # Boundaries are ASCII letters and digits only, so "-" and "_" end a token: payments-gateway-v2 holds payments-gateway.
-    return re.compile(r"(?<![a-z0-9])" + re.escape(folded_term) + r"(?![a-z0-9])")
+    # A single trailing letter or digit still matches, so plurals and numbered forms (vvms, vvm2) of a short
+    # private name are caught; two or more continue a different word (heal / healthy) (review of #19).
+    return re.compile(r"(?<![a-z0-9])" + re.escape(folded_term) + r"(?![a-z0-9]{2})")
 
 
 def leaks(text: str, denylist: Any, words: Any = ()) -> list[str]:
