@@ -373,10 +373,13 @@ def _esc(value: Any) -> str:
 
 
 def render_tour_md(atlas: dict[str, Any],
-                   traffic: dict[str, Any] | None = None) -> str:
-    """The tour as Markdown."""
+                   traffic: dict[str, Any] | None = None,
+                   *, note: str = GENERATED_NOTE) -> str:
+    """The tour as Markdown; ``note`` is the provenance line an embedding project may set."""
+    if not isinstance(note, str) or not note.strip() or "\n" in note or "\r" in note:
+        raise ValueError("note must be one non-empty line")
     doc = tour(atlas, traffic)
-    lines = ["# A tour of the estate", "", GENERATED_NOTE, ""]
+    lines = ["# A tour of the estate", "", note, ""]
     if traffic is not None:
         generated = traffic.get("generated") if isinstance(traffic, dict) else None
         lines += ["As of %s" % (_as_of(generated),), ""]
@@ -481,8 +484,13 @@ def do_tour_md(atlas_path: Path, traffic_path: Path | None,
     return 0
 
 
-def check_tour(doc_path: Path, atlas: dict[str, Any]) -> tuple[bool, str]:
+def check_tour(doc_path: Path, atlas: dict[str, Any],
+               *, note: str = GENERATED_NOTE,
+               write_hint: str = TOUR_WRITE_HINT) -> tuple[bool, str]:
     """Check the tour doc against the atlas without traffic.
+
+    ``note`` and ``write_hint`` are the embedding project's provenance line
+    and refresh hint; the defaults are estate-atlas's own.
 
     Returns ``(ok, message)``: ``True`` when the doc matches what
     :func:`render_tour_md` would write, ``False`` with a reason otherwise.
@@ -492,9 +500,9 @@ def check_tour(doc_path: Path, atlas: dict[str, Any]) -> tuple[bool, str]:
         actual = doc_path.read_bytes().decode("utf-8").replace("\r\n", "\n")
     except (OSError, UnicodeDecodeError) as exc:
         return False, "cannot read doc: %s" % (exc,)
-    expected = render_tour_md(atlas, None)
+    expected = render_tour_md(atlas, None, note=note)
     if not expected.endswith("\n"):
         expected += "\n"
     if actual == expected:
         return True, "ok"
-    return False, "%s is stale; %s" % (doc_path.name, TOUR_WRITE_HINT)
+    return False, "%s is stale; %s" % (doc_path.name, write_hint)
