@@ -360,6 +360,44 @@ class BadPathTests(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class _FlippingIndex:
+    """A real index whose rules vanish while a rollup is routing (another thread's refresh failed)."""
+
+    def __init__(self, real):
+        self._real = real
+        self._flipped = False
+
+    @property
+    def built(self):
+        return self._real.built and not self._flipped
+
+    @property
+    def flow_count(self):
+        return self._real.flow_count
+
+    def route_record(self, rec):
+        self._flipped = True
+        return self._real.route_record(rec)
+
+
+class IndexChangedTests(unittest.TestCase):
+    def test_an_index_that_unbuilds_during_routing_seals_no_day(self):
+        hist, tmp, index, jr, er, lf = make_store(journal=[jrow(1, day_at(D3))])
+        try:
+            out = hist.rollup(_FlippingIndex(index), jr, er, lf, NOW)
+            self.assertEqual(out["days_written"], 0)
+            self.assertEqual(out["skipped"], "index changed during rollup")
+            self.assertIsNone(hist.last_day())
+            self.assertIsNone(cell_of(hist, D3, "fa"))
+            out = hist.rollup(index, jr, er, lf, NOW)  # the next run, with rules, rolls the days up
+            self.assertNotIn("skipped", out)
+            self.assertEqual(hist.last_day(), D3)
+            self.assertEqual(cell_of(hist, D3, "fa")[0], 1)
+        finally:
+            hist.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class OwnHistoryTests(unittest.TestCase):
     """A flow is flagged only on 35 days of its own history (events are kept 14 days: a backfill must not
     make an event-fed flow look like it surged)."""

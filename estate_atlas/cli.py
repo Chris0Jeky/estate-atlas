@@ -226,6 +226,7 @@ def cmd_route(args: argparse.Namespace) -> int:
                                        links=args.links, now=now)
     except ValueError as exc:
         raise UsageError(str(exc)) from None
+    snapshot.pop("timing", None)  # wall-clock milliseconds: the library keeps them, the CLI output is byte-stable
     _emit(_dump(snapshot), args.out)
     return OK
 
@@ -322,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
     except UsageError as exc:
         sys.stderr.write("estate-atlas: %s\n" % (exc,))
         return INVALID
-    except (ValueError, OSError) as exc:  # AtlasError is a ValueError
+    except (ValueError, OSError, ArithmeticError) as exc:  # AtlasError is a ValueError; OverflowError is an ArithmeticError
         sys.stderr.write("estate-atlas: %s\n" % (exc,))
         return INVALID
     except ImportError as exc:

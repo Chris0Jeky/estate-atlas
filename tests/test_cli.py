@@ -147,8 +147,22 @@ class RouteTests(TempCase):
 
     def test_the_output_is_stable(self):
         a, b = self.route(), self.route()
-        a["timing"] = b["timing"] = None
+        self.assertNotIn("timing", a)
         self.assertEqual(a, b)
+
+    def test_the_bytes_are_stable_for_the_same_now(self):
+        now = str(self.route()["generated"])
+        outs = [run("route", ATLAS, "--journal", JOURNAL, "--events", EVENTS, "--now", now)[1] for _ in range(2)]
+        self.assertTrue(outs[0])
+        self.assertEqual(outs[0], outs[1])
+        self.assertNotIn('"timing"', outs[0])
+
+    def test_a_non_finite_now_is_exit_2_without_a_traceback(self):
+        for value in ("inf", "nan"):
+            code, out, err = run("route", ATLAS, "--journal", JOURNAL, "--now", value)
+            self.assertEqual((code, out), (2, ""), value)
+            self.assertEqual(len(err.strip().splitlines()), 1, err)
+            self.assertNotIn("Traceback", err)
 
     def test_an_explicit_now_moves_the_window(self):
         later = self.route("--now", str(self.route()["generated"] + 40 * 86400))
@@ -280,6 +294,19 @@ class DocsTests(TempCase):
         self.assertEqual(run("docs", "write", ATLAS, "--doc", str(doc), "--traffic", str(traffic))[0], 0)
         self.assertIn("As of ", doc.read_text(encoding="utf-8"))
         self.assertEqual(run("docs", "check", ATLAS, "--doc", str(doc))[0], 0)
+
+    def test_an_absurd_generated_time_is_exit_2_without_a_traceback(self):
+        traffic = self.tmp / "traffic.json"
+        run("route", ATLAS, "--journal", JOURNAL, "--events", EVENTS, "--out", str(traffic))
+        data = json.loads(traffic.read_text(encoding="utf-8"))
+        data["generated"] = 1e300
+        traffic.write_text(json.dumps(data), encoding="utf-8")
+        doc = self.tmp / "ARCH.md"
+        doc.write_text(self.DOC, encoding="utf-8")
+        code, _, err = run("docs", "write", ATLAS, "--doc", str(doc), "--traffic", str(traffic))
+        self.assertEqual(code, 2)
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
+        self.assertNotIn("Traceback", err)
 
     def test_a_doc_without_blocks_is_exit_2(self):
         doc = self.tmp / "EMPTY.md"

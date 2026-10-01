@@ -177,6 +177,13 @@ class TrafficHistory:
             written = 0
             self._con.execute("BEGIN IMMEDIATE")
             try:
+                if not index.built or index.flow_count == 0:
+                    # another thread's refresh dropped the rules while this one was routing: the counts above
+                    # may be partial, so seal nothing and let a later run roll the days up
+                    self._con.execute("ROLLBACK")
+                    return {"days_written": 0, "rows_written": 0,
+                            "ms": (time.perf_counter() - t0) * 1000.0,
+                            "skipped": "index changed during rollup"}
                 written = self._write_days(acc, yesterday, today_start)
             except BaseException:
                 self._con.execute("ROLLBACK")
