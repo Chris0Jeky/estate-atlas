@@ -1,0 +1,15 @@
+[project]
+name = "estate-atlas"
+version = "0.1.0.dev0"
+description = "Architecture as checked data: components, contracts and flows proven against git, lit by real traffic, explained in plain words."
+readme = "README.md"
+license = "GPL-3.0-only"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+estate-atlas = "estate_atlas.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

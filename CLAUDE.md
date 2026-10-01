@@ -1,0 +1,3 @@
+# estate-atlas
+
+@AGENTS.md
