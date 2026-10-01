@@ -150,10 +150,10 @@ class TrafficHistory:
                 self._con.execute("BEGIN IMMEDIATE")
                 try:
                     self._seal(first, yesterday)
+                    self._con.execute("COMMIT")
                 except BaseException:
-                    self._con.execute("ROLLBACK")
+                    self._abort()
                     raise
-                self._con.execute("COMMIT")
                 return {"days_written": 0, "ms": (time.perf_counter() - t0) * 1000.0}
             wanted = set(missing)
             since = _day_start(missing[0])
@@ -189,12 +189,21 @@ class TrafficHistory:
                             "ms": (time.perf_counter() - t0) * 1000.0,
                             "skipped": "index changed during rollup"}
                 written = self._write_days(acc, first, yesterday, today_start)
+                self._con.execute("COMMIT")
             except BaseException:
-                self._con.execute("ROLLBACK")
+                self._abort()
                 raise
-            self._con.execute("COMMIT")
             return {"days_written": len(missing), "rows_written": written,
                     "ms": (time.perf_counter() - t0) * 1000.0}
+
+    def _abort(self) -> None:
+        """Roll back whatever is open, so a failed COMMIT never wedges later rollups; the caller re-raises the
+        original error, which a failing ROLLBACK must not replace."""
+        try:
+            if self._con is not None and self._con.in_transaction:
+                self._con.execute("ROLLBACK")
+        except Exception:  # noqa: BLE001 - the original exception is the one worth raising
+            pass
 
     def _seal(self, first: str, yesterday: str) -> None:
         """`first_day` (kept once set) and `last_day`, inside the caller's transaction: a rollup that is skipped

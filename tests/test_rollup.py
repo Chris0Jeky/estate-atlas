@@ -458,5 +458,43 @@ class AtomicRollupTests(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+
+class _CommitFailsOnce:
+    """A connection proxy whose first COMMIT raises, as SQLITE_FULL or an I/O error at commit time would."""
+
+    def __init__(self, con):
+        self._con = con
+        self.failed = False
+
+    def execute(self, sql, *args):
+        if sql.strip().upper() == "COMMIT" and not self.failed:
+            self.failed = True
+            raise sqlite3.OperationalError("database or disk is full")
+        return self._con.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self._con, name)
+
+
+class FailedCommitTests(unittest.TestCase):
+    """Review of #13: a failed COMMIT rolls back, so the transaction never stays open and wedges later runs."""
+
+    def test_the_next_rollup_works_after_a_failed_commit(self):
+        hist, tmp, index, jr, er, lf = make_store(journal=[jrow(1, day_at(D3))])
+        try:
+            real = hist._con
+            hist._con = _CommitFailsOnce(real)
+            with self.assertRaises(sqlite3.OperationalError):
+                hist.rollup(index, jr, er, lf, NOW)
+            self.assertFalse(real.in_transaction)
+            self.assertIsNone(hist.last_day())
+            out = hist.rollup(index, jr, er, lf, NOW)
+            self.assertEqual(out["rows_written"], 1)
+            self.assertEqual(cell_of(hist, D3, "fa"), (1, 0, 1, 0, 1, 0, 0))
+        finally:
+            hist._con = real
+            hist.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+
 if __name__ == "__main__":
     unittest.main()
