@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,29 @@ GLANCE_SENTENCE = ("Generated from the atlas: solid parts run today, dashed ones
                    "planned or partial; open the atlas page for evidence and live state.")
 
 
+@dataclass(frozen=True)
+class Style:
+    """Provenance lines an embedding project may set; the defaults are estate-atlas's own."""
+    generated_line: str = GENERATED_LINE
+    refresh_line: str = REFRESH_LINE
+    write_hint: str = WRITE_HINT
+    page_href: str = "atlas.html"
+
+    def __post_init__(self) -> None:
+        for name in ("generated_line", "refresh_line", "write_hint", "page_href"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip() or "\n" in value or "\r" in value:
+                raise ValueError(f"Style.{name} must be one non-empty line")
+        if not (self.generated_line.startswith("<!--") and self.generated_line.endswith("-->")
+                and "-->" not in self.generated_line[4:-3]):
+            raise ValueError("Style.generated_line must be one HTML comment")
+        if "(" in self.page_href or ")" in self.page_href or " " in self.page_href:
+            raise ValueError("Style.page_href must not contain spaces or parentheses")
+
+
+DEFAULT_STYLE = Style()
+
+
 def esc_cell(value: Any) -> str:
     """Markdown table cell text with pipes escaped."""
     return str(value).replace("\n", " ").replace("|", "\\|").strip()
@@ -56,13 +80,13 @@ def xml_attr(value: Any) -> str:
 
 # ---------------------------------------------------------------- blocks
 
-def glance_block(atlas: dict[str, Any]) -> str:
+def glance_block(atlas: dict[str, Any], *, style: Style = DEFAULT_STYLE) -> str:
     """At-a-glance block: image link, one sentence, mermaid details."""
     mermaid = render_mermaid(atlas, "flows").rstrip("\n")
     return "\n".join([
-        GENERATED_LINE,
+        style.generated_line,
         "",
-        GLANCE_IMAGE,
+        f"[![The estate at a glance](atlas-glance.svg)]({style.page_href})",
         "",
         GLANCE_SENTENCE,
         "",
@@ -76,10 +100,10 @@ def glance_block(atlas: dict[str, Any]) -> str:
     ])
 
 
-def owners_block(atlas: dict[str, Any]) -> str:
+def owners_block(atlas: dict[str, Any], *, style: Style = DEFAULT_STYLE) -> str:
     """Who-owns-what table, one row per contract in atlas order."""
     titles = {c["id"]: c["title"] for c in atlas["components"]}
-    lines = [GENERATED_LINE, "",
+    lines = [style.generated_line, "",
              "| Record | Only writer | Format | Readers |",
              "|---|---|---|---|"]
     for contract in atlas["contracts"]:
@@ -103,11 +127,11 @@ def _evidence_count(comp: dict[str, Any]) -> int:
     return total
 
 
-def layers_block(atlas: dict[str, Any]) -> str:
+def layers_block(atlas: dict[str, Any], *, style: Style = DEFAULT_STYLE) -> str:
     """Per-layer appendix: heading, summary, component table."""
     ordered = order_cards(atlas)
     comp_by_id = {c["id"]: c for c in atlas["components"]}
-    parts = [GENERATED_LINE]
+    parts = [style.generated_line]
     for index, layer in enumerate(atlas["layers"]):
         if index > 0:
             parts.append("")
@@ -147,10 +171,11 @@ def _as_of(generated: Any) -> str:
     return stamp.strftime("%Y-%m-%d %H:%M UTC")
 
 
-def traffic_block(atlas: dict[str, Any], traffic_doc: dict[str, Any] | None) -> str:
+def traffic_block(atlas: dict[str, Any], traffic_doc: dict[str, Any] | None,
+                  *, style: Style = DEFAULT_STYLE) -> str:
     """The weekly traffic snapshot from an `estate-atlas-traffic@1` document; None gives the placeholder."""
     if traffic_doc is None:
-        return "\n".join([GENERATED_LINE, "", PLACEHOLDER_LINE, "", REFRESH_LINE])
+        return "\n".join([style.generated_line, "", PLACEHOLDER_LINE, "", style.refresh_line])
     if not isinstance(traffic_doc, dict) or traffic_doc.get("schema") != "estate-atlas-traffic@1":
         raise ValueError("--traffic is not an estate-atlas-traffic@1 document")
     titles = {c["id"]: c["title"] for c in atlas["components"]}
@@ -165,7 +190,7 @@ def traffic_block(atlas: dict[str, Any], traffic_doc: dict[str, Any] | None) -> 
     as_of += ", %s inferred, %s internal, %s unrouted." % (
         _pct(_count(cov.get("inferred")), total), _pct(_count(cov.get("internal")), total),
         _pct(_count(cov.get("unrouted")), total))
-    lines = [GENERATED_LINE, "",
+    lines = [style.generated_line, "",
              as_of,
              "",
              "| Flow | From → To | This week | Last 24 h | Declared / inferred | Pulse |",
@@ -192,7 +217,7 @@ def traffic_block(atlas: dict[str, Any], traffic_doc: dict[str, Any] | None) -> 
     cross = traffic_doc.get("crosschecks") if isinstance(traffic_doc.get("crosschecks"), dict) else {}
     silent = sorted(f for f in cross.get("silent") or [] if isinstance(f, str))
     lines += ["", "Silent live flows: " + (", ".join(esc_cell(f) for f in silent) if silent else "none"),
-              "", REFRESH_LINE]
+              "", style.refresh_line]
     return "\n".join(lines)
 
 
@@ -405,9 +430,9 @@ def replace_blocks(text: str, blocks: dict[str, str]) -> str:
     return "".join(out)
 
 
-def _traffic_inner_empty(inner: str) -> bool:
+def _traffic_inner_empty(inner: str, *, style: Style = DEFAULT_STYLE) -> bool:
     rest = [line for line in inner.splitlines()
-            if line.strip() and line.strip() != GENERATED_LINE]
+            if line.strip() and line.strip() != style.generated_line]
     return not rest
 
 
@@ -423,7 +448,8 @@ def svg_path_for(doc_path: Path) -> Path:
 
 def write(atlas_path: Path, doc_path: Path,
           traffic_path: Path | None = None,
-          svg_path: Path | None = None) -> tuple[int, str]:
+          svg_path: Path | None = None,
+          *, style: Style = DEFAULT_STYLE) -> tuple[int, str]:
     """Rewrite the marked blocks in the doc and the glance SVG.
 
     The SVG defaults to ``atlas-glance.svg`` beside the doc. Returns an exit
@@ -450,9 +476,9 @@ def write(atlas_path: Path, doc_path: Path,
     except ValueError as exc:
         return 2, "%s" % (exc,)
     blocks = {
-        "glance": glance_block(atlas),
-        "owners": owners_block(atlas),
-        "layers": layers_block(atlas),
+        "glance": glance_block(atlas, style=style),
+        "owners": owners_block(atlas, style=style),
+        "layers": layers_block(atlas, style=style),
     }
     if traffic_path is not None:
         try:
@@ -462,11 +488,11 @@ def write(atlas_path: Path, doc_path: Path,
         if not isinstance(traffic_doc, dict):
             return 2, "traffic file must hold a JSON object"
         try:
-            blocks["traffic"] = traffic_block(atlas, traffic_doc)
+            blocks["traffic"] = traffic_block(atlas, traffic_doc, style=style)
         except ValueError as exc:
             return 2, "%s" % (exc,)
-    elif "traffic" in current and _traffic_inner_empty(current["traffic"]):
-        blocks["traffic"] = traffic_block(atlas, None)
+    elif "traffic" in current and _traffic_inner_empty(current["traffic"], style=style):
+        blocks["traffic"] = traffic_block(atlas, None, style=style)
     try:
         updated = replace_blocks(text, blocks)
     except ValueError as exc:
@@ -479,8 +505,8 @@ def write(atlas_path: Path, doc_path: Path,
     return 0, "ok"
 
 
-def _traffic_ok(inner: str) -> bool:
-    if GENERATED_LINE not in inner:
+def _traffic_ok(inner: str, *, style: Style = DEFAULT_STYLE) -> bool:
+    if style.generated_line not in inner:
         return False
     if PLACEHOLDER_LINE in inner:
         return True
@@ -488,7 +514,8 @@ def _traffic_ok(inner: str) -> bool:
 
 
 def check_docs(atlas_path: Path, doc_path: Path,
-               svg_path: Path | None = None) -> tuple[int, str]:
+               svg_path: Path | None = None,
+               *, style: Style = DEFAULT_STYLE) -> tuple[int, str]:
     """Check the doc blocks and the glance SVG against the atlas.
 
     The SVG defaults to ``atlas-glance.svg`` beside the doc. Returns an exit
@@ -511,25 +538,25 @@ def check_docs(atlas_path: Path, doc_path: Path,
     try:
         current = parse_blocks(text)
     except ValueError as exc:
-        return 2, "%s; %s" % (exc, WRITE_HINT)
+        return 2, "%s; %s" % (exc, style.write_hint)
     for name in ("glance", "owners", "layers", "traffic"):
         if name not in current:
-            return 2, "missing atlas block %r; %s" % (name, WRITE_HINT)
+            return 2, "missing atlas block %r; %s" % (name, style.write_hint)
     expected = {
-        "glance": glance_block(atlas),
-        "owners": owners_block(atlas),
-        "layers": layers_block(atlas),
+        "glance": glance_block(atlas, style=style),
+        "owners": owners_block(atlas, style=style),
+        "layers": layers_block(atlas, style=style),
     }
     for name, fresh in expected.items():
         if current[name].strip("\n") != fresh.strip("\n"):
-            return 1, "block %r is stale; %s" % (name, WRITE_HINT)
-    if not _traffic_ok(current["traffic"]):
-        return 1, "traffic block is missing its snapshot or placeholder; %s" % (WRITE_HINT,)
+            return 1, "block %r is stale; %s" % (name, style.write_hint)
+    if not _traffic_ok(current["traffic"], style=style):
+        return 1, "traffic block is missing its snapshot or placeholder; %s" % (style.write_hint,)
     try:
         # newline-normalised: a checkout that stores LF may hold the file as CRLF
         actual_svg = svg_path.read_bytes().decode("utf-8").replace("\r\n", "\n")
     except (OSError, UnicodeDecodeError):
-        return 1, "%s is missing; %s" % (svg_path.name, WRITE_HINT)
+        return 1, "%s is missing; %s" % (svg_path.name, style.write_hint)
     if actual_svg != glance_svg(atlas):
-        return 1, "%s is stale; %s" % (svg_path.name, WRITE_HINT)
+        return 1, "%s is stale; %s" % (svg_path.name, style.write_hint)
     return 0, "ok"
