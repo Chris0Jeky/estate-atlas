@@ -496,11 +496,16 @@ def check_tour(doc_path: Path, atlas: dict[str, Any],
     :func:`render_tour_md` would write, ``False`` with a reason otherwise.
     """
     doc_path = Path(doc_path)
+    if not isinstance(write_hint, str) or not write_hint.strip() or "\n" in write_hint or "\r" in write_hint:
+        return False, "write_hint must be one non-empty line"
     try:
         actual = doc_path.read_bytes().decode("utf-8").replace("\r\n", "\n")
     except (OSError, UnicodeDecodeError) as exc:
         return False, "cannot read doc: %s" % (exc,)
-    expected = render_tour_md(atlas, None, note=note)
+    try:
+        expected = render_tour_md(atlas, None, note=note)
+    except ValueError as exc:
+        return False, str(exc)
     if not expected.endswith("\n"):
         expected += "\n"
     if actual == expected:

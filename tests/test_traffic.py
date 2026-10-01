@@ -257,6 +257,23 @@ class IndexTests(unittest.TestCase):
         self.assertEqual(ti.snapshot("f1")["records"], [])
         self.assertIsNone(ti.snapshot()["flows"]["f1"]["last_at"])
 
+    def test_partial_expiry_keeps_the_newest_last_at_and_drops_d7(self):
+        # one key: its older rows leave the window while its newest stays inside it
+        kw = dict(actor="client:a", subject="service:api", producer="batch.night", verb="ran")
+        ti, clock, _, _, _ = make_index([jrow(1, NOW - 160 * H, **kw), jrow(2, NOW - 150 * H, **kw),
+                                         jrow(3, NOW - 10 * H, **kw)])
+        ti.refresh()
+        before = ti.snapshot()["flows"]["f1"]
+        self.assertEqual((before["d7"], before["last_at"]), (3, NOW - 10 * H))
+        clock.t += 20 * H  # the two older rows are now 180 h and 170 h old; the newest is 30 h old
+        ti._last_refresh = clock.t - 16
+        ti.refresh()
+        after = ti.snapshot()["flows"]["f1"]
+        self.assertEqual(after["d7"], 1)
+        self.assertEqual(after["last_at"], NOW - 10 * H)
+        v = ti.verify()
+        self.assertTrue(v["equal"], v["differences"])
+
     def test_verify_is_equal_across_an_hour_boundary(self):
         # the snapshot and the rebuild are compared at one instant, over whole buckets
         rows = [jrow(i, NOW - 168 * H + 30 * 60 + i, actor="client:a", subject="service:api",

@@ -7,6 +7,7 @@ vocabularies. Each claim carries evidence references into versioned checkouts.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -148,6 +149,10 @@ def _ref(ref: Any, where: str, repo_ids: set[str]) -> None:
     if (not isinstance(path, str) or not path or "\\" in path or path.startswith("/")
             or ".." in PurePosixPath(path).parts or ":" in path or len(path) > 300):
         raise AtlasError(f"{where}.path: must be a repository-relative path with forward slashes")
+    if any(ord(c) < 32 or ord(c) == 127 for c in path):
+        raise AtlasError(f"{where}.path: must not contain control characters")
+    if any(segment in ("", ".") for segment in path.split("/")):
+        raise AtlasError(f"{where}.path: must not have an empty or '.' segment")
     if "anchor" in ref:
         anchor = ref["anchor"]
         if not isinstance(anchor, str) or not 1 <= len(anchor) <= 200 or "\n" in anchor:
@@ -308,6 +313,10 @@ def validate(doc: dict[str, Any]) -> None:
         raise AtlasError(f"atlas.schema: must be {SCHEMA}")
     if not isinstance(doc["updated"], str) or not DATE_PATTERN.fullmatch(doc["updated"]):
         raise AtlasError("atlas.updated: must be YYYY-MM-DD")
+    try:
+        datetime.date.fromisoformat(doc["updated"])
+    except ValueError:
+        raise AtlasError("atlas.updated: not a real date") from None
     repos = doc["repos"]
     if not isinstance(repos, dict):
         raise AtlasError("atlas.repos: must be an object")

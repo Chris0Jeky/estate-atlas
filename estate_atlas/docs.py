@@ -58,8 +58,13 @@ class Style:
         if not (self.generated_line.startswith("<!--") and self.generated_line.endswith("-->")
                 and "-->" not in self.generated_line[4:-3]):
             raise ValueError("Style.generated_line must be one HTML comment")
-        if "(" in self.page_href or ")" in self.page_href or " " in self.page_href:
-            raise ValueError("Style.page_href must not contain spaces or parentheses")
+        if len(self.generated_line) < 7:
+            raise ValueError("Style.generated_line must be one HTML comment")
+        for name in ("generated_line", "refresh_line", "write_hint"):
+            if MARK_RE.search(getattr(self, name)):
+                raise ValueError(f"Style.{name} must not contain an atlas:begin or atlas:end marker")
+        if any(c.isspace() for c in self.page_href) or any(c in "()[]<>\"'" for c in self.page_href):
+            raise ValueError("Style.page_href must not contain whitespace, brackets, parentheses or quotes")
 
 
 DEFAULT_STYLE = Style()
@@ -430,10 +435,14 @@ def replace_blocks(text: str, blocks: dict[str, str]) -> str:
     return "".join(out)
 
 
+def _placeholder_lines(style: Style) -> list[str]:
+    return [style.generated_line.strip(), PLACEHOLDER_LINE, style.refresh_line.strip()]
+
+
 def _traffic_inner_empty(inner: str, *, style: Style = DEFAULT_STYLE) -> bool:
-    rest = [line for line in inner.splitlines()
-            if line.strip() and line.strip() != style.generated_line]
-    return not rest
+    """True for a block with no content or only a placeholder written by the default style or ``style``."""
+    lines = [line.strip() for line in inner.splitlines() if line.strip()]
+    return not lines or lines in (_placeholder_lines(DEFAULT_STYLE), _placeholder_lines(style))
 
 
 def load_atlas(path: Path) -> dict[str, Any]:

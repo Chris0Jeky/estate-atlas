@@ -159,6 +159,64 @@ class ValidationTests(unittest.TestCase):
                 model.validate(doc)
 
 
+class RendererConsistencyTests(unittest.TestCase):
+    """The model rejects what the renderer rejects, so an atlas that validates also renders."""
+
+    def assert_rejected(self, mutate, fragment: str) -> None:
+        doc = minimal()
+        mutate(doc)
+        with self.assertRaises(model.AtlasError) as caught:
+            model.validate(doc)
+        self.assertIn(fragment, str(caught.exception))
+
+    def test_control_characters_in_a_path_are_rejected(self) -> None:
+        for bad in ("a\x00b.py", "a\x01b.py", "a\tb.py", "a\x7fb.py"):
+            with self.subTest(path=repr(bad)):
+                self.assert_rejected(
+                    lambda d, bad=bad: d["components"][0]["surfaces"][0]["evidence"][0].update(path=bad),
+                    "control characters")
+
+    def test_empty_and_dot_segments_in_a_path_are_rejected(self) -> None:
+        for bad in ("a//b.py", "docs/", "./a.py", "a/./b.py"):
+            with self.subTest(path=bad):
+                self.assert_rejected(
+                    lambda d, bad=bad: d["components"][0]["surfaces"][0]["evidence"][0].update(path=bad),
+                    "empty or '.' segment")
+
+    def test_expect_paths_follow_the_same_rules(self) -> None:
+        def planned(d: dict, path: str) -> None:
+            d["components"][1].update(status="planned", evidence=[], expect=[{"repo": "extra", "path": path}])
+        self.assert_rejected(lambda d: planned(d, "a//b"), "empty or '.' segment")
+        self.assert_rejected(lambda d: planned(d, "a\x00b"), "control characters")
+        doc = minimal()
+        planned(doc, "docs/NEW.md")
+        model.validate(doc)
+
+    def test_updated_must_be_a_real_calendar_date(self) -> None:
+        for bad in ("2026-02-30", "2026-13-01", "2026-00-10", "2025-02-29"):
+            with self.subTest(updated=bad):
+                self.assert_rejected(lambda d, bad=bad: d.update(updated=bad), "not a real date")
+        doc = minimal()
+        doc["updated"] = "2028-02-29"
+        model.validate(doc)
+
+    def test_expect_is_rejected_on_a_live_component_and_a_retired_contract(self) -> None:
+        ref = [{"repo": "extra", "path": "docs/SINK.md"}]
+        self.assert_rejected(lambda d: d["components"][1].update(expect=ref), "only a planned")
+        self.assert_rejected(lambda d: d["contracts"][0].update(expect=ref), "only a planned")
+        self.assert_rejected(lambda d: d["contracts"][0].update(status="retired", evidence=[], expect=ref),
+                             "only a planned")
+
+    def test_a_contract_status_the_model_rejects_is_rejected_by_the_renderer_too(self) -> None:
+        from estate_atlas import render
+        doc = minimal()
+        doc["contracts"][0]["status"] = "documented"
+        with self.assertRaises(model.AtlasError):
+            model.validate(doc)
+        with self.assertRaises(render.AtlasError):
+            render.parse_atlas(doc)
+
+
 class InstancesTests(unittest.TestCase):
     def test_valid_pattern_passes(self) -> None:
         doc = minimal()

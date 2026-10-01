@@ -387,6 +387,17 @@ class NoteTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 explain_mod.render_tour_md(fixture_atlas(), note=bad)
 
+    def test_check_tour_reports_a_bad_note_or_write_hint_instead_of_raising(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tour_path = write_tour(Path(tmp), fixture_atlas())
+            for bad in ("a\nb", "a\rb", "", "  "):
+                ok, message = explain_mod.check_tour(tour_path, fixture_atlas(), note=bad)
+                self.assertFalse(ok)
+                self.assertIn("note", message)
+                ok, message = explain_mod.check_tour(tour_path, fixture_atlas(), write_hint=bad)
+                self.assertFalse(ok)
+                self.assertIn("write_hint", message)
+
 
 if __name__ == "__main__":
     unittest.main()

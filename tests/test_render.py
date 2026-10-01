@@ -362,6 +362,8 @@ class ModelParityTests(unittest.TestCase):
         from estate_atlas import model
         self.assertEqual(set(render.COMPONENT_STATUSES), model.COMPONENT_STATUS)
         self.assertEqual(set(render.FLOW_STATUSES), model.FLOW_STATUS)
+        self.assertEqual(set(render.CONTRACT_STATUSES), model.CONTRACT_STATUS)
+        self.assertEqual(set(render.EXPECT_STATUSES), model.EXPECT_STATUSES)
 
     def test_retired_and_planned_components_with_long_titles_render(self) -> None:
         from estate_atlas import model

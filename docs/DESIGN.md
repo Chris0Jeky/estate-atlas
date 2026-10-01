@@ -55,8 +55,9 @@ Evidence refs name a repo. `repositories(doc, overrides, host)` resolves each re
 - then `repos[name].paths[host]`;
 - otherwise the repo is unresolved.
 
-An unresolved repo makes its refs `unresolved`, not missing. `check` reads `origin/<default_branch>` (or `HEAD`
-with `--worktree`) through `git show`, and it never fetches.
+An unresolved repo makes its refs `unresolved`, not missing. `check` reads `origin/<default_branch>` through `git
+show`, and it never fetches. With `--worktree` it reads the checkout's working files instead, so uncommitted
+edits count; it does not read `HEAD`.
 
 ## 4. Traffic engine (`traffic.py`)
 
