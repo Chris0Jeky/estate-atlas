@@ -7,7 +7,7 @@ The workspace owns human commitments and authoritative operation receipts. An as
 Run from the repository root:
 
 ```sh
-python -m estate_atlas validate --atlas examples/workspace/atlas.json
+python -m estate_atlas validate examples/workspace/atlas.json
 python -m unittest discover -s tests -p test_workspace_example.py -v
 ```
 
