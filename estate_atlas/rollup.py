@@ -115,9 +115,15 @@ class TrafficHistory:
 
         The first run backfills at most 90 days; later runs only read the
         days after `meta.last_day`. Idempotent: a day already present is
-        never rewritten. Returns {"days_written", "ms"}.
+        never rewritten. Returns {"days_written", "ms"}, plus "skipped" when
+        the index has no rules to route with (it is not built, or the atlas has
+        no flows): nothing is written and `last_day` does not advance, so the
+        days stay missing until a later run can route them.
         """
         t0 = time.perf_counter()
+        if not index.built or index.flow_count == 0:
+            return {"days_written": 0, "ms": (time.perf_counter() - t0) * 1000.0,
+                    "skipped": "index not built"}
         now_f = float(now() if callable(now) else now)
         today_start = float(int(now_f // DAY_S) * DAY_S)
         yesterday = _day_of(today_start - 1)

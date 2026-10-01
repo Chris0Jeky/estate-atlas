@@ -76,7 +76,9 @@ The routing works as follows:
 
 Counts are kept in hourly buckets over 168 hours. `verify()` rebuilds from scratch and compares.
 
-Rollups: `weekly(rows, last_day, weeks, flows)` and `flags(series, days_stored, first_seen)`:
+Rollups: `rollup` refuses to run (returns `skipped: "index not built"`, writes nothing and leaves `last_day` alone)
+while the traffic index is not built or has no flows, so a day is never sealed without rules to route it.
+`weekly(rows, last_day, weeks, flows)` and `flags(series, days_stored, first_seen)`:
 - **fading**: last week is below 40% of the 4-week average, and that average is at least 10;
 - **surging**: last week is at least 20 and above 3 times the average;
 - a flow is flagged only after 35 days of its own history.
