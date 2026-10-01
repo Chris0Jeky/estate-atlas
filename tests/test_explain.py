@@ -1,7 +1,7 @@
 """Explain checks against a fictional shop atlas.
 
-Port of the explain checks: plain-English lines, the tour, the Markdown
-rendering and the tour-doc check, without any private names.
+Covers the plain-English lines, the tour, the Markdown rendering and the
+tour-doc check.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ ELL = "\u2026"
 def fixture_atlas() -> dict:
     hub_flows = [
         {"id": "h%d" % i, "from": "gw", "to": "hub", "contract": None,
-         "trigger": "tick %d" % i, "status": "live",
+         "trigger": "order %d" % i, "status": "live",
          "evidence": [{"repo": "shop", "path": "README.md"}]}
         for i in range(7)
     ]
@@ -103,7 +103,7 @@ def fixture_traffic() -> dict:
         "f-main": flow_entry(102, 9, 90),
         "f-up": flow_entry(0, 0, 0),
         "f-down": flow_entry(0, 0, 0),
-        "f-pulse": flow_entry(0, 0, 0, 26914),
+        "f-pulse": flow_entry(0, 0, 0, 25000),
         "f-quiet": flow_entry(0, 0, 0),
     }
     flows.update(hub)
@@ -122,10 +122,10 @@ def fixture_live() -> dict:
             "instances": 3,
             "by_status": {"live": 2, "idle": 1},
             "failing": [
-                {"intent": "serve", "subject": "api", "severity": "high"},
-                {"intent": "pair", "subject": "phone", "severity": "low"},
-                {"intent": "push", "subject": "ntfy", "severity": "low"},
-                {"intent": "sync", "subject": "clock", "severity": "low"},
+                {"intent": "checkout-up", "subject": "web", "severity": "high"},
+                {"intent": "payments-healthy", "subject": "payments", "severity": "low"},
+                {"intent": "queue-drained", "subject": "worker", "severity": "low"},
+                {"intent": "cache-warm", "subject": "api", "severity": "low"},
             ],
         },
         "worker": {"instances": 1, "by_status": {"live": 1}, "failing": []},
@@ -179,10 +179,10 @@ class ExplainTests(unittest.TestCase):
                                   traffic=fixture_traffic())
         text = text_of(doc, "fed_by")
         self.assertTrue(
-            text.startswith("Fed by Gateway (tick 0) %s 50 crossings this week." % (EMD,)),
+            text.startswith("Fed by Gateway (order 0) %s 50 crossings this week." % (EMD,)),
             text)
-        self.assertIn("tick 5) %s 5 crossings this week" % (EMD,), text)
-        self.assertNotIn("tick 6", text)
+        self.assertIn("order 5) %s 5 crossings this week" % (EMD,), text)
+        self.assertNotIn("order 6", text)
         self.assertTrue(text.endswith("%s and 1 more." % (ELL,)), text)
         refs = [line for line in doc["lines"] if line["kind"] == "fed_by"][0]["refs"]
         self.assertIn("flow:h0", refs)
@@ -193,7 +193,7 @@ class ExplainTests(unittest.TestCase):
                                   traffic=fixture_traffic())
         self.assertEqual(
             text_of(doc, "fed_by"),
-            "Fed by Gateway (heartbeat) %s \u2665 26,914 heartbeats this week. "
+            "Fed by Gateway (heartbeat) %s \u2665 25,000 heartbeats this week. "
             "Fed by Worker (never). "
             "Fed by Gateway (manual) %s nothing this week." % (EMD, EMD))
 
@@ -212,7 +212,7 @@ class ExplainTests(unittest.TestCase):
         self.assertEqual(
             text_of(doc, "running"),
             "Running now: 3 instances (2 live, 1 idle); "
-            "4 failing conditions: serve on api, pair on phone, push on ntfy")
+            "4 failing conditions: checkout-up on web, payments-healthy on payments, queue-drained on worker")
         worker = explain_mod.explain(fixture_atlas(), "worker", live=fixture_live())
         self.assertEqual(text_of(worker, "running"),
                          "Running now: 1 instances (1 live)")
@@ -229,7 +229,7 @@ class ExplainTests(unittest.TestCase):
         self.assertEqual(
             text_of(sink, "this_week"),
             "This week: 0 records crossed its flows (0 in the last 24 hours). "
-            "It keeps a heartbeat of 26,914 pulses. f-quiet is silent.")
+            "It keeps a heartbeat of 25,000 pulses. f-quiet is silent.")
 
     def test_gaps_lists_non_live_flows_by_id(self) -> None:
         doc = explain_mod.explain(fixture_atlas(), "worker")

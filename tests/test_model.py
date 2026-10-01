@@ -144,7 +144,7 @@ class ValidationTests(unittest.TestCase):
             with self.assertRaises(model.AtlasError):
                 model.validate(doc)
 
-    def test_component_statuses_are_the_production_set(self) -> None:
+    def test_component_statuses_are_the_documented_set(self) -> None:
         doc = minimal()
         doc["components"][1].update(status="planned")
         doc["components"][1]["evidence"] = []
