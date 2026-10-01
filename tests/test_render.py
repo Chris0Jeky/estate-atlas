@@ -58,7 +58,7 @@ def fixture_atlas() -> dict:
              "evidence": [{"repo": "shop", "path": "docs/a.md",
                            "anchor": "usage", "note": "plan"}]},
             {"id": "c-leg", "title": "Legacy", "layer": "l-store",
-             "home": "external:OldCo", "status": "retired", "summary": "Retired box.",
+             "home": "external:OldCo", "status": "absent", "summary": "Absent box.",
              "surfaces": [], "owns": [],
              "evidence": [{"repo": "shop", "path": "old.md",
                            "url": "https://github.com/Example/shop/blob/main/custom.md"}]},
@@ -353,3 +353,31 @@ class TrafficRenderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ModelParityTests(unittest.TestCase):
+    """Every atlas the model accepts renders: statuses and title lengths agree."""
+
+    def test_status_sets_match_the_model(self) -> None:
+        from estate_atlas import model
+        self.assertEqual(set(render.COMPONENT_STATUSES), model.COMPONENT_STATUS)
+        self.assertEqual(set(render.FLOW_STATUSES), model.FLOW_STATUS)
+
+    def test_documented_and_absent_components_with_long_titles_render(self) -> None:
+        from estate_atlas import model
+        shop = Path(__file__).resolve().parents[1] / "examples" / "shop" / "atlas.json"
+        doc = json.loads(shop.read_text(encoding="utf-8"))
+        doc["components"][0]["status"] = "documented"
+        doc["components"][0]["evidence"] = []
+        doc["components"][1]["status"] = "absent"
+        doc["components"][1]["evidence"] = []
+        doc["components"][1]["title"] = "T" * 300
+        model.validate(doc)
+        parsed = render.parse_atlas(doc)
+        html = render.render_html(parsed)
+        self.assertIn('class="dot documented"', html)
+        self.assertIn('class="dot absent"', html)
+        mmd = render.render_mermaid(parsed, "flows")
+        self.assertIn("classDef documented", mmd)
+        self.assertIn("classDef absent", mmd)
+

@@ -29,7 +29,8 @@ def is_check_schema(value: Any) -> bool:
         value == CHECK_SCHEMA or value.endswith("/atlas-check@2")
     )
 
-COMPONENT_STATUSES = ("live", "partial", "planned", "retired")
+# The same sets as model.py, so every atlas that validates also renders.
+COMPONENT_STATUSES = ("live", "partial", "planned", "documented", "absent")
 FLOW_STATUSES = ("live", "partial", "documented", "planned", "absent")
 GAP_ORDER = ("absent", "planned", "documented", "partial")
 EXPECT_STATUSES = ("planned", "documented", "absent")
@@ -241,7 +242,7 @@ def _parse_vocabularies(raw: Any, comp_ids: set[str]) -> list[dict[str, Any]]:
         if vid in seen:
             raise AtlasError("duplicate vocabulary id %r" % (vid,))
         seen.add(vid)
-        title = _need_line(item.get("title"), where + ".title", 200)
+        title = _need_line(item.get("title"), where + ".title", 300)
         owner = item.get("owner")
         if owner not in comp_ids:
             raise AtlasError("%s.owner names an unknown component" % (where,))
@@ -333,7 +334,7 @@ def parse_atlas(data: Any) -> dict[str, Any]:
         layer_ids.add(lid)
         layers.append({
             "id": lid,
-            "title": _need_line(item.get("title"), where + ".title", 200),
+            "title": _need_line(item.get("title"), where + ".title", 300),
             "summary": _need_text(item.get("summary"), where + ".summary", 2000),
         })
 
@@ -387,7 +388,7 @@ def parse_atlas(data: Any) -> dict[str, Any]:
         expect = _need_expect(item.get("expect"), where, status) if "expect" in item else []
         components.append({
             "id": cid,
-            "title": _need_line(item.get("title"), where + ".title", 200),
+            "title": _need_line(item.get("title"), where + ".title", 300),
             "layer": layer,
             "home": home,
             "status": status,
@@ -428,7 +429,7 @@ def parse_atlas(data: Any) -> dict[str, Any]:
         cexpect = _need_expect(item.get("expect"), where, cstatus) if "expect" in item else []
         contracts.append({
             "id": kid,
-            "title": _need_line(item.get("title"), where + ".title", 200),
+            "title": _need_line(item.get("title"), where + ".title", 300),
             "producer": producer,
             "consumers": list(consumers),
             "format": _need_line(item.get("format"), where + ".format", 120),
@@ -677,7 +678,8 @@ def render_mermaid(atlas: dict[str, Any], view: str = "flows") -> str:
     lines.append("    classDef live fill:#dcfce7,stroke:#166534,color:#14532d")
     lines.append("    classDef partial fill:#fef3c7,stroke:#92400e,color:#451a03")
     lines.append("    classDef planned fill:#e0e7ff,stroke:#3730a3,color:#1e1b4b")
-    lines.append("    classDef retired fill:#f1f5f9,stroke:#475569,color:#0f172a")
+    lines.append("    classDef documented fill:#f1f5f9,stroke:#475569,color:#0f172a")
+    lines.append("    classDef absent fill:#fee2e2,stroke:#991b1b,color:#450a0a")
     for comp in sorted(atlas["components"], key=lambda c: c["id"]):
         lines.append("    class %s %s" % (node_ids[comp["id"]], comp["status"]))
     if view == "flows":
@@ -752,7 +754,8 @@ cursor:pointer}
 .dot{display:inline-block;width:.7em;height:.7em;border-radius:50%;margin-right:6px;
 border:1px solid var(--line)}
 .dot.live{background:var(--live)}.dot.partial{background:var(--partial)}
-.dot.planned{background:var(--planned)}.dot.retired{background:var(--documented)}
+.dot.planned{background:var(--planned)}.dot.documented{background:var(--documented)}
+.dot.absent{background:var(--absent)}
 #edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 #edges #paths path{fill:none;stroke-width:1.8;opacity:.18;transition:opacity .15s,stroke-width .15s}
 #map.show-all #edges #paths path{opacity:.8}
