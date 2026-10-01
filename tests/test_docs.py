@@ -423,6 +423,49 @@ class StyleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             docs.Style(page_href="a(b)")
 
+    def test_a_style_line_cannot_carry_an_atlas_marker(self) -> None:
+        marker = "<!-- atlas:end traffic -->"
+        for kwargs in ({"generated_line": "<!-- x %s -->" % marker},
+                       {"generated_line": "<!-- atlas:begin glance -->"},
+                       {"refresh_line": "Refresh %s" % marker},
+                       {"write_hint": "run %s" % marker}):
+            with self.assertRaises(ValueError, msg=str(kwargs)):
+                docs.Style(**kwargs)
+
+    def test_generated_line_must_be_a_whole_comment(self) -> None:
+        with self.assertRaises(ValueError):
+            docs.Style(generated_line="<!-->")
+        with self.assertRaises(ValueError):
+            docs.Style(generated_line="<!--->")
+        docs.Style(generated_line="<!---->")
+
+    def test_page_href_rejects_whitespace_and_link_breaking_characters(self) -> None:
+        for bad in ("a\tb", "a b", "a\nb", "a[b", "a]b", "a<b", "a>b", 'a"b', "a'b", "a)b"):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                docs.Style(page_href=bad)
+        docs.Style(page_href="site/map.html#top")
+
+    def test_switching_style_on_a_default_written_doc_refills_the_traffic_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            atlas_path, doc_path = empty_doc(Path(tmp), fixture_atlas())
+            self.assertEqual(docs.write(atlas_path, doc_path)[0], 0)
+            code, message = docs.write(atlas_path, doc_path, style=CUSTOM)
+            self.assertEqual(code, 0, message)
+            code, message = docs.check_docs(atlas_path, doc_path, style=CUSTOM)
+            self.assertEqual(code, 0, message)
+            self.assertNotIn(docs.REFRESH_LINE, doc_path.read_text(encoding="utf-8"))
+
+    def test_a_real_snapshot_is_not_replaced_when_the_style_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            atlas_path, doc_path = empty_doc(Path(tmp), fixture_atlas())
+            traffic_path = Path(tmp) / "traffic.json"
+            traffic_path.write_text(json.dumps(traffic_doc()), encoding="utf-8")
+            self.assertEqual(docs.write(atlas_path, doc_path, traffic_path)[0], 0)
+            before = docs.parse_blocks(doc_path.read_text(encoding="utf-8"))["traffic"]
+            self.assertEqual(docs.write(atlas_path, doc_path, style=CUSTOM)[0], 0)
+            after = docs.parse_blocks(doc_path.read_text(encoding="utf-8"))["traffic"]
+            self.assertEqual(before, after)
+
 
 if __name__ == "__main__":
     unittest.main()
