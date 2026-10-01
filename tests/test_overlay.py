@@ -298,9 +298,15 @@ class LeakTests(unittest.TestCase):
     def test_word_terms_match_whole_words_only(self):
         self.assertEqual(overlay.leaks("the web layer", [], ["web"]), ["web"])
         self.assertEqual(overlay.leaks("The Web.", [], ["web"]), ["web"])
-        self.assertEqual(overlay.leaks("a webhook and the web-based part", [], ["web"]), [])
-        self.assertEqual(overlay.leaks("orders-api and api_v2", [], ["api"]), [])
+        self.assertEqual(overlay.leaks("a webhook and a webinar2", [], ["web"]), [])
         self.assertEqual(overlay.leaks("(api)", [], ["api"]), ["api"])
+
+    def test_a_hyphen_or_underscore_splits_tokens(self):
+        self.assertEqual(overlay.leaks("the web-based part", [], ["web"]), ["web"])
+        self.assertEqual(overlay.leaks("orders-api and api_v2", [], ["api"]), ["api"])
+        self.assertEqual(overlay.leaks("see payments-gateway-v2 now", [], ["payments-gateway"]), ["payments-gateway"])
+        self.assertEqual(overlay.leaks("ledger_store", [], ["ledger"]), ["ledger"])
+        self.assertEqual(overlay.leaks("ledgerstore and ledger9", [], ["ledger"]), [])
 
     def test_terms_cover_the_ids_titles_remotes_and_repo_keys(self):
         subs, words = overlay.leak_terms(shop(), fixture())
@@ -328,7 +334,155 @@ class LeakTests(unittest.TestCase):
         self.assertEqual(overlay.leaks(clean + "\nSee the Fulfilment worker.\n", subs, words),
                          ["Fulfilment worker", "worker"])  # the title, and the id as a whole word
         self.assertEqual(overlay.leaks(clean + "\nSee the SHOP API.\n", subs, words), ["Shop API", "api", "shop"])
-        self.assertEqual(overlay.leaks(clean + " via web-to-api", subs, words), ["web-to-api"])
+        self.assertEqual(overlay.leaks(clean + " via web-to-api", subs, words), ["api", "web", "web-to-api"])
+
+
+class FoldingTests(unittest.TestCase):
+    def test_case_width_compatibility_and_spacing_do_not_hide_a_term(self):
+        self.assertEqual(overlay.leaks("the \uff33tore\u00a0 front\tpage", ["Store  Front"]), ["Store  Front"])
+        self.assertEqual(overlay.leaks("the \uff41\uff50\uff49 service", [], ["api"]), ["api"])  # fullwidth
+        self.assertEqual(overlay.leaks("STRASSE", ["Stra\u00dfe"]), ["Stra\u00dfe"])  # casefold, not lower
+        self.assertEqual(overlay.leaks("the \ufb01nal ledger", ["final ledger"]), ["final ledger"])  # ligature
+
+    def test_a_term_with_a_pipe_is_found(self):
+        self.assertEqual(overlay.leaks("Billing | Invoices", ["billing | invoices"]), ["billing | invoices"])
+        self.assertEqual(overlay.leaks("Billing  |  Invoices", ["billing | invoices"]), ["billing | invoices"])
+
+
+class OriginalTextTermTests(unittest.TestCase):
+    def doc(self):
+        doc = shop()
+        doc["components"][0]["summary"] = "Private storefront wording about the secret checkout."
+        doc["layers"][0]["summary"] = "Short one."
+        flow = doc["flows"][0]
+        flow["status"], flow["gap"] = "partial", "Only the private reads are wired so far."
+        flow["trigger"] = "A shopper opens the private page."
+        return doc
+
+    def spec(self):
+        spec = fixture()
+        spec["flows"]["web-to-api"]["gap"] = "Reads only."
+        return spec
+
+    def test_a_differing_original_summary_trigger_and_gap_become_terms(self):
+        subs, _ = overlay.leak_terms(self.doc(), self.spec())
+        for original in ("Private storefront wording about the secret checkout.",
+                         "Only the private reads are wired so far.", "A shopper opens the private page."):
+            self.assertIn(original, subs)
+
+    def test_short_texts_and_texts_equal_to_the_public_one_are_not_terms(self):
+        subs, _ = overlay.leak_terms(self.doc(), self.spec())
+        self.assertNotIn("Short one.", subs)  # under MIN_TEXT_TERM characters
+        self.assertEqual(overlay.MIN_TEXT_TERM, 12)
+        doc = shop()
+        spec = fixture()
+        spec["components"]["web"]["summary"] = doc["components"][0]["summary"]
+        self.assertNotIn(doc["components"][0]["summary"], overlay.leak_terms(doc, spec)[0])
+
+    def test_republishing_an_original_summary_is_caught(self):
+        doc = self.doc()
+        spec = self.spec()
+        # another entry's public text reuses the original wording, in other letter case
+        spec["components"]["api"]["summary"] = doc["components"][0]["summary"].upper()
+        public = overlay.apply_overlay(doc, spec)
+        found = overlay.find_leaks(doc, spec, public, explain.render_tour_md(public), markdown=True)
+        self.assertTrue(any(term == doc["components"][0]["summary"] for term, _ in found), found)
+
+
+class FindLeaksTests(unittest.TestCase):
+    def setUp(self):
+        self.doc, self.spec = shop(), fixture()
+
+    def find(self, spec=None, *, markdown=True):
+        spec = spec or self.spec
+        public = overlay.apply_overlay(self.doc, spec)
+        text = explain.render_tour_md(public) if markdown else json.dumps(explain.tour(public), ensure_ascii=False)
+        return overlay.find_leaks(self.doc, spec, public, text, markdown=markdown)
+
+    def test_a_clean_overlay_has_no_hits(self):
+        self.assertEqual(self.find(), [])
+        self.assertEqual(self.find(markdown=False), [])
+
+    def test_a_term_with_a_pipe_is_caught_before_and_after_escaping(self):
+        spec = fixture()
+        spec["denylist"] = ["Billing | Invoices"]
+        spec["components"]["db"]["summary"] = "Keeps every order for Billing | Invoices."
+        public = overlay.apply_overlay(self.doc, spec)
+        text = explain.render_tour_md(public)
+        self.assertIn("Billing \\| Invoices", text)  # the renderer escapes the pipe...
+        self.assertEqual(overlay.leaks(text, spec["denylist"]), [])  # ...which is why the output alone is not enough
+        found = overlay.find_leaks(self.doc, spec, public, text, markdown=True)
+        self.assertIn(("Billing | Invoices", "components[order-store].summary"), found)
+        self.assertIn(("Billing | Invoices", "the rendered tour (unescaped)"), found)
+
+    def test_the_unescaped_render_alone_catches_it_when_the_fields_are_clean(self):
+        spec = fixture()
+        spec["denylist"] = ["a<b | c"]
+        public = overlay.apply_overlay(self.doc, spec)
+        found = overlay.find_leaks(self.doc, spec, public, "see a&lt;b \\| c", markdown=True)
+        self.assertEqual(found, [("a<b | c", "the rendered tour (unescaped)")])
+
+    def test_the_overlay_title_and_every_field_kind_is_checked(self):
+        spec = fixture()
+        spec["denylist"] = ["zzsecret"]
+        spec["title"] = "the zzsecret shop"
+        self.assertIn(("zzsecret", "overlay.title"), self.find(spec))
+        for kind, key, field in (("layers", "edge", "title"), ("layers", "edge", "summary"),
+                                 ("components", "web", "home"), ("contracts", "shop-http", "summary"),
+                                 ("flows", "web-to-api", "trigger")):
+            spec = fixture()
+            spec["denylist"] = ["zzsecret"]
+            spec[kind][key][field] = "has zzsecret inside"
+            found = self.find(spec, markdown=False)
+            self.assertTrue(any(term == "zzsecret" and where.startswith(kind + "[") and where.endswith("." + field)
+                                for term, where in found), (kind, field, found))
+
+    def test_a_glued_id_is_caught(self):
+        spec = fixture()
+        spec["components"]["api"]["summary"] = "Runs as the api-v2 process."
+        self.assertIn(("api", "components[orders-service].summary"), self.find(spec))
+
+    def test_a_json_tour_is_walked_after_parsing(self):
+        term = 'say "cheese"\\now'
+        spec = fixture()
+        spec["denylist"] = [term]
+        spec["components"]["db"]["summary"] = "Keeps orders, " + term + "."
+        public = overlay.apply_overlay(self.doc, spec)
+        text = json.dumps(explain.tour(public), ensure_ascii=False)
+        self.assertEqual(overlay.leaks(text, [term]), [])  # the quote and backslash are escaped in the JSON text
+        found = overlay.find_leaks(self.doc, spec, public, text, markdown=False)
+        self.assertTrue(any(t == term and where.startswith("tour.steps[") for t, where in found), found)
+
+    def test_a_private_key_in_the_json_output_is_caught(self):
+        public = overlay.apply_overlay(self.doc, self.spec)
+        out = json.dumps({"steps": [{"extra": 1, "web-to-api": 2}]})
+        found = overlay.find_leaks(self.doc, self.spec, public, out, markdown=False)
+        self.assertIn(("web-to-api", "tour.steps[0].web-to-api (key)"), found)
+
+    def test_unparseable_json_is_refused(self):
+        public = overlay.apply_overlay(self.doc, self.spec)
+        with self.assertRaises(model.AtlasError):
+            overlay.find_leaks(self.doc, self.spec, public, "{not json", markdown=False)
+
+
+class HardeningTests(unittest.TestCase):
+    def test_a_non_string_flow_in_off_status_is_an_atlas_error(self):
+        spec = fixture()
+        traffic = {"schema": overlay.TRAFFIC_SCHEMA, "flows": {},
+                   "crosschecks": {"silent": [], "off_status": [{"flow": ["web-to-api"], "status": "planned"}]}}
+        with self.assertRaises(model.AtlasError) as ctx:
+            overlay.apply_overlay_traffic(traffic, spec)
+        self.assertIn("must be a string", str(ctx.exception))
+        traffic["crosschecks"]["off_status"] = [{"flow": 7}]
+        with self.assertRaises(model.AtlasError):
+            overlay.apply_overlay_traffic(traffic, spec)
+
+    def test_the_contract_format_is_dropped(self):
+        doc = shop()
+        doc["contracts"][0]["format"] = "PRIVATE-FORMAT"
+        out = overlay.apply_overlay(doc, fixture())
+        self.assertTrue(all("format" not in c for c in out["contracts"]))
+        self.assertNotIn("PRIVATE-FORMAT", json.dumps(out))
 
 
 class CliTests(TempCase):
@@ -369,6 +523,14 @@ class CliTests(TempCase):
         self.assertEqual((code, out), (0, ""))
         self.assertIn("# A tour of a small online store", target.read_text(encoding="utf-8"))
 
+    def test_an_empty_overlay_path_fails_closed(self):
+        for mode in (("--md",), ()):
+            target = self.tmp / "TOUR.md"
+            code, out, _ = run("tour", ATLAS, *mode, "--overlay", "", "--out", str(target))
+            self.assertEqual(code, 2)
+            self.assertEqual(out, "")
+            self.assertFalse(target.exists())
+
     def test_without_an_overlay_nothing_changes(self):
         code, out, _ = run("tour", ATLAS, "--md")
         self.assertEqual(code, 0)
@@ -402,6 +564,45 @@ class CliTests(TempCase):
         code, _, err = run("tour", ATLAS, "--md", "--overlay", self.write("leaky.json", spec))
         self.assertEqual(code, 2)
         self.assertIn("'internal-only'", err)
+
+    def test_a_private_term_with_a_pipe_is_exit_2_in_both_formats_and_names_the_field(self):
+        spec = fixture()
+        spec["denylist"] = ["Billing | Invoices"]
+        spec["components"]["db"]["summary"] = "Keeps every order for Billing | Invoices."
+        path = self.write("pipe.json", spec)
+        for extra in (("--md",), ()):
+            code, out, err = run("tour", ATLAS, "--overlay", path, *extra)
+            self.assertEqual((code, out), (2, ""), extra)
+            self.assertIn("'Billing | Invoices' in", err)
+            self.assertIn("order-store", err)
+
+    def test_a_glued_id_is_exit_2(self):
+        spec = fixture()
+        spec["components"]["worker"]["summary"] = "Runs as worker-v2 and picks up tasks."
+        code, out, err = run("tour", ATLAS, "--md", "--overlay", self.write("glued.json", spec))
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("'worker' in", err)
+
+    def test_a_leak_in_the_overlay_title_is_exit_2(self):
+        spec = fixture()
+        spec["title"] = "the Storefront"
+        code, out, err = run("tour", ATLAS, "--md", "--overlay", self.write("title.json", spec))
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("overlay.title", err)
+
+    def test_a_folded_leak_is_exit_2(self):
+        spec = fixture()
+        spec["components"]["web"]["summary"] = "Serves pages from the \uff33TOREFRONT  via \uff41pi calls."
+        code, out, err = run("tour", ATLAS, "--md", "--overlay", self.write("folded.json", spec))
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("'Storefront'", err)
+
+    def test_a_non_string_traffic_flow_is_exit_2_not_a_traceback(self):
+        traffic = {"schema": overlay.TRAFFIC_SCHEMA, "flows": {},
+                   "crosschecks": {"silent": [], "off_status": [{"flow": {"a": 1}, "status": "planned"}]}}
+        code, out, err = self.tour("--traffic", self.write("badtraffic.json", traffic))
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("must be a string", err)
 
     def test_a_bad_overlay_is_exit_2(self):
         spec = fixture()

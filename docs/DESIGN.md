@@ -150,21 +150,26 @@ JSON file that gives every layer, component, contract and flow public wording an
   per kind.
 - **The rewrite.** `apply_overlay` returns a deep copy with public text and public ids, renamed everywhere they are
   referenced, and `home` replaced by the public label. It keeps only what the tour and `explain` read: `repos` is
-  `{}` and `evidence`, `expect`, `surfaces`, `owns`, `instances`, `vocabularies` and flow `traffic` rules are gone.
+  `{}` and `evidence`, `expect`, `surfaces`, `owns`, `instances`, `vocabularies`, flow `traffic` rules and a contract's `format` (the tour never prints it) are gone.
   The result is deliberately **not** a valid atlas: do not pass it to `model.validate` or `check`.
 - **Traffic.** `apply_overlay_traffic` renames the flow ids of an `estate-atlas-traffic@1` document so the tour's
   "this week" numbers still show. It keeps `generated`, the per-flow counts and the `silent` and `off_status`
   crosschecks, and drops everything else: `unrouted` examples, `rule_gaps`, sources, coverage and any flow the
-  overlay does not name.
-- **Leak check.** `leak_terms(doc, overlay)` returns what the output must not contain. As case-insensitive
-  substrings: the overlay's `denylist`, every original title that differs from its public title, and every repo
-  `remote`. As whole words, where a hyphen or underscore is part of the word: every original id that differs from
-  its public id, every repo key and every original `home` that differs from its label. A word that the overlay
-  itself publishes (as an id or label) is left out. `leaks(text, denylist, words=())` returns the terms found,
-  sorted.
+  overlay does not name. A non-string `flow` in `off_status` is an `AtlasError` (exit 2).
+- **Leak check.** `leak_terms(doc, overlay)` returns what the output must not contain. As substrings: the overlay's
+  `denylist`, every original title that differs from its public title, every original summary, flow trigger and flow
+  gap that differs from its public text (only when it is at least 12 characters, `MIN_TEXT_TERM`, so a short common
+  phrase does not flood the check), and every repo `remote`. As whole words, where only ASCII letters and digits are
+  word characters, so `-` and `_` split tokens (`payments-gateway-v2` holds `payments-gateway`): every original id
+  that differs from its public id, every repo key and every original `home` that differs from its label. A word that
+  the overlay itself publishes (as an id or label) is left out. `leaks(text, denylist, words=())` folds the text and
+  every term first (NFKC, `casefold()`, whitespace runs collapsed to one space) and returns the terms found, sorted.
+  `find_leaks` runs it where escaping cannot hide anything: on every string of the overlaid document and the overlay
+  title (before any escaping), on the rendered output, on the Markdown with `\|` and HTML entities undone, and on
+  every string and key of the parsed JSON output. Each hit is `(term, field)`.
 - **CLI.** `tour atlas.json --md --overlay O.json [--traffic T]` validates the overlay, renders the tour from the
   overlaid document, runs the leak check on the output and exits 2, naming the terms and printing or writing
-  nothing, if anything leaks. A `title` in the overlay replaces "the estate" in the heading. `--overlay` does not
+  nothing, if anything leaks; the message names each term and the field it was found in. A `title` in the overlay replaces "the estate" in the heading. `--overlay` does not
   combine with `--check`.
 - **Keep the overlay private.** Its keys are the original ids, so the overlay file belongs with the private atlas;
   only its output is published.
