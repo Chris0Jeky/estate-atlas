@@ -1243,6 +1243,9 @@ def render_html(atlas: dict[str, Any],
             if (h := r["href"]) is not None
         ) or "none"
         consumers = ", ".join(sorted(contract["consumers"]))
+        owner = "contracts." + contract["id"]
+        expect_refs = contract.get("expect", [])
+        ev += _expect_line(owner, expect_refs) + (_promotable_pill(owner) if not expect_refs else "")
         contract_rows.append(
             "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
             % (html.escape(contract["id"]), html.escape(contract["format"]),

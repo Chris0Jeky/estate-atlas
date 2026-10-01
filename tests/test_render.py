@@ -350,6 +350,281 @@ class TrafficRenderTests(unittest.TestCase):
         self.assertNotIn("(pulse)", plain)
 
 
+class ContractExpectRenderTests(unittest.TestCase):
+    """A planned contract shows its expected evidence and the promotable pill."""
+
+    def planned_contract_doc(self) -> dict:
+        doc = fixture_atlas()
+        doc["contracts"][2]["expect"] = [
+            {"repo": "shop", "path": "docs/slots.md", "anchor": "slots"}]
+        return doc
+
+    def contracts_table(self, page: str) -> str:
+        match = re.search(r'<main id="view-contracts"[^>]*>(.*?)</main>', page, re.DOTALL)
+        assert match is not None, "contracts view is missing"
+        return match.group(1)
+
+    def parsed_default(self) -> dict:
+        return render.parse_atlas(copy.deepcopy(fixture_atlas()))
+
+    def test_planned_contract_shows_expected_evidence_and_pill(self) -> None:
+        atlas = render.parse_atlas(copy.deepcopy(self.planned_contract_doc()))
+        check_doc = fixture_check()
+        check_doc["promotable"] = [{"owner": "contracts.k-three", "refs": 1}]
+        check = render.parse_check(copy.deepcopy(check_doc))
+        page = render.render_html(atlas, check)
+        table = self.contracts_table(page)
+        row = next(r for r in table.split("<tr>") if "<td>k-three</td>" in r)
+        self.assertIn(
+            'Expected evidence: <a href="https://github.com/Example/shop/blob/main/docs/slots.md#slots" '
+            'rel="noopener">docs/slots.md#slots</a>.', row)
+        self.assertIn('<span class="pill planned">built: update the atlas</span>', row)
+        other = next(r for r in table.split("<tr>") if "<td>k-one</td>" in r)
+        self.assertNotIn("Expected evidence", other)
+        self.assertNotIn("built: update the atlas", other)
+        self.assertIn("1 promotable", page)
+
+    def test_expect_without_promotable_has_no_pill(self) -> None:
+        atlas = render.parse_atlas(copy.deepcopy(self.planned_contract_doc()))
+        table = self.contracts_table(render.render_html(atlas, render.parse_check(fixture_check())))
+        self.assertIn("Expected evidence:", table)
+        self.assertNotIn("built: update the atlas", table)
+
+    def test_promotable_contract_without_expect_still_gets_pill(self) -> None:
+        check_doc = fixture_check()
+        check_doc["promotable"] = [{"owner": "contracts.k-three", "refs": 0}]
+        table = self.contracts_table(
+            render.render_html(self.parsed_default(), render.parse_check(copy.deepcopy(check_doc))))
+        self.assertNotIn("Expected evidence", table)
+        self.assertEqual(table.count("built: update the atlas"), 1)
+
+    def test_contracts_without_expect_or_promotable_are_unchanged(self) -> None:
+        table = self.contracts_table(
+            render.render_html(self.parsed_default(), render.parse_check(fixture_check())))
+        self.assertNotIn("Expected evidence", table)
+        self.assertNotIn("built: update the atlas", table)
+        self.assertIn("<td>k-three</td><td>csv</td><td>planned</td><td>c-sched</td><td>c-leg</td>"
+                      '<td><a href="https://github.com/Example/shop/blob/main/custom.md" '
+                      'rel="noopener">x.md</a></td></tr>', table)
+
+
+HOSTILE = "<img src=x onerror=alert(1)>"
+HOSTILE_ESCAPED = "&lt;img src=x onerror=alert(1)&gt;"
+HOSTILE_JSON = "\\u003cimg src=x onerror=alert(1)>"
+
+
+def hostile(tag: str) -> str:
+    """The hostile string plus a visible tag, so each sink is found on its own."""
+    return "%s[%s]" % (HOSTILE, tag)
+
+
+def hostile_ref(tag: str, repo: str = "shop") -> dict:
+    return {"repo": repo, "path": hostile(tag + ".path"), "anchor": hostile(tag + ".anchor"),
+            "note": hostile(tag + ".note")}
+
+
+# Where each sink's text lands in the page: "html" (server-rendered markup, entity-escaped),
+# "island" (only inside the JSON island, escaped there), or "none" (the model accepts the
+# text but the page never prints it; the raw string must still never appear).
+HOSTILE_SINKS = {
+    "layer.title": "html", "layer.summary": "html",
+    "component.title": "html", "component.summary": "island",
+    "component.planned.summary": "html",
+    "component.surface.name": "island",
+    "component.owns": "island",
+    "surface.evidence.path": "island", "surface.evidence.anchor": "island",
+    "surface.evidence.note": "island",
+    "component.evidence.path": "island", "component.evidence.anchor": "island",
+    "component.evidence.note": "island",
+    "contract.title": "none", "contract.summary": "none",
+    "flow.trigger": "island", "flow.gap": "html",
+    "vocab.title": "html", "vocab.term": "html", "vocab.means": "html",
+    "vocab.source.path": "html",
+    "check.host": "html",
+    "check.drift.missing_in_atlas": "html", "check.drift.missing_in_source": "html",
+    "check.drift.why": "html",
+    "expect.component.path": "html", "expect.component.anchor": "html",
+    "expect.component.note": "html",
+    "expect.contract.path": "html", "expect.contract.anchor": "html",
+    "expect.contract.note": "html",
+    "expect.flow.path": "html", "expect.flow.anchor": "html", "expect.flow.note": "html",
+}
+
+# Skipped, because the model forbids the characters or the page never carries the field:
+#  - repo names in refs, the name in external:<name> homes, the ref url key, contract format
+#    and the traffic rule patterns: the model requires a declared repo id, an id-like external
+#    name, no url, a fixed format set and patterns with no whitespace (the hostile string has
+#    a space). (The page's own parser is looser;
+#    test_input_only_the_page_parser_accepts_is_escaped covers that path.)
+#  - instances (the "Runs as" list): INSTANCE_RE allows only [A-Za-z0-9._/#@:+-], so "<" cannot occur.
+#  - ids (layer, component, contract, flow, vocabulary) and the producer, consumer, from, to
+#    and owner references to them: ID_RE rejects "<". The home repo id: REPO_ID_RE rejects "<".
+#  - surface kind: the model allows a fixed set of kinds.
+#  - traffic.source: limited to journal, links or events.
+# Fed in but never printed (so only the raw-string-absent assertions apply):
+#  - promotable owners and reasons: the page counts owners and matches them by exact id,
+#    and the model drops "reason".
+# The Flows view prints a flow's trigger only for flows that carry traffic rules, so the
+# trigger is an island sink here and an html sink in the traffic test below.
+# Evidence refs on surfaces and components are links built by the page script, so the server
+# only carries them in the island.
+
+
+def hostile_atlas() -> dict:
+    doc = fixture_atlas()
+    doc["layers"][0]["title"] = hostile("layer.title")
+    doc["layers"][0]["summary"] = hostile("layer.summary")
+    # the shared fixture's external names are not model-valid (capitals); the model wants id-like names
+    doc["components"][1]["home"] = "external:paycorp"
+    doc["components"][5]["home"] = "external:oldco"
+    web = doc["components"][0]
+    web["title"] = hostile("component.title")
+    web["summary"] = hostile("component.summary")
+    web["surfaces"] = [{"kind": "cli",
+                        "name": hostile("component.surface.name"),
+                        "evidence": [hostile_ref("surface.evidence")]}]
+    web["owns"] = [hostile("component.owns")]
+    web["evidence"] = [hostile_ref("component.evidence")]
+    web["instances"] = ["svc:*"]
+    arch = doc["components"][4]  # planned component: listed under "planned components"
+    arch["summary"] = hostile("component.planned.summary")
+    arch["expect"] = [hostile_ref("expect.component")]
+    contract = doc["contracts"][2]  # planned contract
+    contract["title"] = hostile("contract.title")
+    contract["summary"] = hostile("contract.summary")
+    doc["contracts"][0]["format"] = "json"  # the model allows a fixed set of formats
+    doc["contracts"][1]["format"] = "jsonl"
+    contract["format"] = "yaml"
+    contract["expect"] = [hostile_ref("expect.contract")]
+    contract["evidence"] = [{"repo": "shop", "path": "x.md"}]
+    doc["components"][5]["evidence"] = [{"repo": "shop", "path": "old.md"}]
+    flow = doc["flows"][3]  # planned flow
+    flow["trigger"] = hostile("flow.trigger")
+    flow["gap"] = hostile("flow.gap")
+    flow["expect"] = [hostile_ref("expect.flow")]
+    doc["vocabularies"] = [
+        {"id": "v-lists", "title": hostile("vocab.title"), "owner": "c-web",
+         "source": {"repo": "shop", "path": hostile("vocab.source.path"), "each": True},
+         "terms": [{"term": hostile("vocab.term"), "means": hostile("vocab.means")}]},
+        {"id": "v-why", "title": "Second", "owner": "c-web",
+         "source": {"repo": "shop", "path": "terms.md", "each": True},
+         "terms": [{"term": "plain", "means": "ordinary"}]},
+    ]
+    return doc
+
+
+def hostile_check() -> dict:
+    check = fixture_check()
+    check["host"] = hostile("check.host")
+    check["vocabularies"] = [
+        {"id": "v-lists", "status": "drift",
+         "missing_in_atlas": [hostile("check.drift.missing_in_atlas")],
+         "missing_in_source": [hostile("check.drift.missing_in_source")]},
+        {"id": "v-why", "status": "drift", "why": hostile("check.drift.why")},
+    ]
+    check["promotable"] = [
+        {"owner": "contracts.k-three", "refs": 1, "reason": hostile("promotable.reason")},
+        {"owner": hostile("promotable.owner"), "refs": 2},
+    ]
+    return check
+
+
+class HostileInputTests(unittest.TestCase):
+    """The page escapes `<img src=x onerror=alert(1)>` in every text sink it prints."""
+
+    def render_page(self) -> str:
+        atlas = render.parse_atlas(copy.deepcopy(hostile_atlas()))
+        check = render.parse_check(copy.deepcopy(hostile_check()))
+        return render.render_html(atlas, check)
+
+    @staticmethod
+    def split_island(page: str) -> tuple[str, str]:
+        island = json_block(page)
+        return page.replace(island, "", 1), island
+
+    def test_fixture_is_valid_for_the_model(self) -> None:
+        from estate_atlas import model
+        model.validate(copy.deepcopy(hostile_atlas()))
+
+    def test_raw_string_never_appears_outside_the_island(self) -> None:
+        outside, island = self.split_island(self.render_page())
+        self.assertNotIn(HOSTILE, outside)
+        self.assertNotIn("<img", outside)
+        self.assertNotIn(HOSTILE, island)
+
+    def test_every_html_sink_is_entity_escaped_at_least_once(self) -> None:
+        outside, _ = self.split_island(self.render_page())
+        for sink, where in HOSTILE_SINKS.items():
+            if where != "html":
+                continue
+            with self.subTest(sink=sink):
+                self.assertIn(HOSTILE_ESCAPED + "[" + sink + "]", outside)
+
+    def test_island_only_sinks_are_escaped_inside_the_island(self) -> None:
+        outside, island = self.split_island(self.render_page())
+        for sink, where in HOSTILE_SINKS.items():
+            if where != "island":
+                continue
+            with self.subTest(sink=sink):
+                self.assertIn(HOSTILE_JSON + "[" + sink + "]", island)
+                self.assertNotIn("[" + sink + "]", outside)
+
+    def test_unprinted_sinks_stay_unprinted(self) -> None:
+        page = self.render_page()
+        for sink, where in HOSTILE_SINKS.items():
+            if where == "none":
+                with self.subTest(sink=sink):
+                    self.assertNotIn("[" + sink + "]", page)
+        for tag in ("promotable.reason", "promotable.owner"):
+            with self.subTest(tag=tag):
+                self.assertNotIn("[" + tag + "]", page)
+
+    def test_island_has_no_raw_angle_bracket(self) -> None:
+        _, island = self.split_island(self.render_page())
+        self.assertNotIn("<", island)
+        data = json.loads(island)
+        web = next(c for c in data["components"] if c["id"] == "c-web")
+        self.assertEqual(web["title"], hostile("component.title"))
+
+    def test_input_only_the_page_parser_accepts_is_escaped(self) -> None:
+        # The page parser accepts a ref to a repo the atlas does not declare, any external
+        # name and a ref url (the model validator does not), and then prints them.
+        doc = hostile_atlas()
+        doc["components"][1]["home"] = "external:" + hostile("external.home")
+        doc["contracts"][2]["format"] = hostile("contract.format")
+        doc["flows"][3]["traffic"] = [{
+            "source": "journal", "producer": hostile("traffic.producer"),
+            "actor": hostile("traffic.actor"), "subject": hostile("traffic.subject"),
+            "verb": [hostile("traffic.verb"), "merged"]}]
+        doc["contracts"][2]["evidence"] = [{
+            "repo": "shop", "path": "x.md",
+            "url": "https://github.com/Example/shop/blob/main/" + hostile("evidence.url")}]
+        doc["components"][4]["expect"] = [hostile_ref("undeclared.expect", repo=hostile("undeclared.expect.repo"))]
+        doc["components"][0]["evidence"] = [hostile_ref("undeclared.evidence", repo=hostile("undeclared.evidence.repo"))]
+        doc["vocabularies"][1]["source"]["repo"] = hostile("undeclared.vocab.repo")
+        page = render.render_html(render.parse_atlas(copy.deepcopy(doc)),
+                                  render.parse_check(copy.deepcopy(hostile_check())))
+        outside, island = self.split_island(page)
+        self.assertNotIn(HOSTILE, outside)
+        self.assertNotIn("<", island)
+        self.assertIn(HOSTILE_ESCAPED + "[evidence.url]", outside)
+        for tag in ("undeclared.expect.repo", "undeclared.vocab.repo", "external.home",
+                    "contract.format", "traffic.producer", "traffic.actor", "traffic.subject",
+                    "traffic.verb", "flow.trigger"):
+            with self.subTest(tag=tag):
+                self.assertIn(HOSTILE_ESCAPED + "[" + tag + "]", outside)
+        self.assertIn(HOSTILE_JSON + "[undeclared.evidence.repo]", island)
+
+    def test_hostile_page_is_byte_identical_across_renders(self) -> None:
+        self.assertEqual(self.render_page(), self.render_page())
+
+    def test_every_fed_tag_is_accounted_for(self) -> None:
+        fed = set(re.findall(r"\[([a-z][a-z._]*)\]",
+                             json.dumps(hostile_atlas()) + json.dumps(hostile_check())))
+        fed_not_asserted = {"promotable.reason", "promotable.owner"}
+        self.assertEqual(fed - fed_not_asserted, set(HOSTILE_SINKS))
+
+
 if __name__ == "__main__":
     unittest.main()
 
