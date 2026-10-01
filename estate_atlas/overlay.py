@@ -271,21 +271,53 @@ def apply_overlay_traffic(traffic_doc: dict[str, Any], overlay: dict[str, Any]) 
 # ------------------------------------------------------------------------------------------ leak check
 
 MIN_TEXT_TERM = 12  # an original summary, trigger or gap shorter than this is not used as a term: too much noise
+MIN_TITLE_SUBSTRING = 4  # an original title shorter than this (folded) is matched as a word, like an id, not a substring
+
+
+def _published_unchanged(doc: dict[str, Any], overlay: dict[str, Any]) -> set[str]:
+    """Folded texts the overlay publishes unchanged: a title, summary, trigger, gap or home label equal to the original."""
+    same: set[str] = set()
+    for kind, names in (("layers", ("title", "summary")), ("components", ("title", "summary", "home")),
+                        ("contracts", ("title", "summary")), ("flows", ("trigger", "gap"))):
+        for item in doc.get(kind, []):
+            entry = overlay[kind].get(item.get("id")) if isinstance(item, dict) else None
+            if not isinstance(entry, dict):
+                continue
+            for name in names:
+                original, public = item.get(name), entry.get(name)
+                # raw equality, not folded: a case-, width- or whitespace-only "rename" is still a rename and
+                # must not exempt the private text it copies (review of #19)
+                if isinstance(original, str) and isinstance(public, str) and original == public:
+                    same.add(fold(public))
+    return same
 
 
 def leak_terms(doc: dict[str, Any], overlay: dict[str, Any]) -> tuple[list[str], list[str]]:
     """``(substring terms, word terms)`` that the overlaid output must not contain.
 
     Substring terms (matched anywhere): the overlay's own ``denylist``, every original title that differs from its
-    public title, every original summary, flow trigger and flow gap that differs from its public text (only when it
-    is at least ``MIN_TEXT_TERM`` characters, so a short common phrase does not flood the check), and every repo
-    ``remote``. Word terms (matched whole): every original id that differs from its public id, every repo key and
-    every original ``home`` that differs from its public label. A word term that is itself a public id or label of
-    the overlay is public already and is left out. Matching is described at ``leaks``.
+    public title and is at least ``MIN_TITLE_SUBSTRING`` characters, every original summary, flow trigger and flow
+    gap that differs from its public text (only when it is at least ``MIN_TEXT_TERM`` characters, so a short common
+    phrase does not flood the check), and every repo ``remote``. Word terms (matched whole): every original id that
+    differs from its public id, every original title shorter than ``MIN_TITLE_SUBSTRING`` characters (so a private
+    ``DB`` flags the word ``db`` but not ``feedback``), every repo key and every original ``home`` that differs from
+    its public label. A word term that is itself a public id or label of the overlay is public already and is left
+    out. Matching is described at ``leaks``.
+
+    A derived title or text term (not the ``denylist``, not a ``remote``) is also left out when, folded, it equals a
+    whole text that the overlay publishes unchanged: some entry's public title, summary, trigger, gap or home label
+    that is the same as that entry's original. A private layer titled ``Core`` is then not refused because a
+    component's public title is still ``Core``; the author is publishing that exact string in the atlas's own
+    wording. This cannot whitelist a private term the overlay does not publish verbatim: it needs equality with a
+    whole published text, never a substring of one, so ``Core`` does not excuse ``Core services``; and the entry
+    must publish its own original wording, so a private text that was merely copied into another entry's public text
+    (the entry's original differs) is still a leak. An explicit ``denylist`` term is the author's own instruction
+    and never takes this exemption.
     """
     subs: set[str] = {t for t in overlay.get("denylist", []) if isinstance(t, str)}
     words: set[str] = set()
     published: set[str] = set()
+    unchanged = _published_unchanged(doc, overlay)
     for kind in KINDS:
         for original, entry in overlay[kind].items():
             published.add(entry["id"])
@@ -301,7 +333,12 @@ def leak_terms(doc: dict[str, Any], overlay: dict[str, Any]) -> tuple[list[str],
                 original = item.get(name)
                 if not isinstance(original, str) or original == entry.get(name):
                     continue
-                if name == "title" or len(fold(original)) >= MIN_TEXT_TERM:
+                folded = fold(original)
+                if folded in unchanged:
+                    continue
+                if name == "title":
+                    (subs if len(folded) >= MIN_TITLE_SUBSTRING else words).add(original)
+                elif len(folded) >= MIN_TEXT_TERM:
                     subs.add(original)
     for comp in doc.get("components", []):
         entry = overlay["components"].get(comp.get("id"))
@@ -323,7 +360,9 @@ def fold(text: str) -> str:
 
 def _word(folded_term: str) -> re.Pattern[str]:
     # Boundaries are ASCII letters and digits only, so "-" and "_" end a token: payments-gateway-v2 holds payments-gateway.
-    return re.compile(r"(?<![a-z0-9])" + re.escape(folded_term) + r"(?![a-z0-9])")
+    # A single trailing letter or digit still matches, so plurals and numbered forms (vvms, vvm2) of a short
+    # private name are caught; two or more continue a different word (heal / healthy) (review of #19).
+    return re.compile(r"(?<![a-z0-9])" + re.escape(folded_term) + r"(?![a-z0-9]{2})")
 
 
 def leaks(text: str, denylist: Any, words: Any = ()) -> list[str]:
