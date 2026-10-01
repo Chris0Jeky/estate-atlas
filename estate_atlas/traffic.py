@@ -332,8 +332,8 @@ class TrafficIndex:
         self._event_cursor = 0
         self._flow_buckets: dict[str, dict[int, dict[tuple, int]]] = {}
         self._flow_undated: dict[str, dict[tuple, int]] = {}
-        self._flow_last_at: dict[str, float | None] = {}
-        self._flow_pulse_last_at: dict[str, float | None] = {}
+        # newest dated `at` per flow and (is_pulse, source): exact, independent of the ring's 20 entries
+        self._flow_newest: dict[str, dict[tuple[bool, str], float]] = {}
         self._flow_rings: dict[str, list[dict[str, Any]]] = {}
         self._cov_buckets: dict[int, dict[tuple, int]] = {}
         self._cov_undated: dict[tuple, int] = {}
@@ -350,6 +350,15 @@ class TrafficIndex:
         self._rebuilt_at: float | None = None
         self._verify_at: float | None = None
         self._verify_cached: dict[str, Any] | None = None
+
+    @property
+    def built(self) -> bool:
+        """True once a rebuild read an atlas; False when the atlas was never read or could not be."""
+        return self._built
+
+    @property
+    def flow_count(self) -> int:
+        return len(self._flows_list)
 
     # -- refresh ------------------------------------------------------------------
     def refresh(self) -> dict[str, Any]:
@@ -400,8 +409,7 @@ class TrafficIndex:
         self._event_cursor = 0
         self._flow_buckets = {}
         self._flow_undated = {}
-        self._flow_last_at = {}
-        self._flow_pulse_last_at = {}
+        self._flow_newest = {}
         self._flow_rings = {}
         self._cov_buckets = {}
         self._cov_undated = {}
@@ -425,8 +433,7 @@ class TrafficIndex:
                                      "rules": self._rules.flow_counts.get(fid, 0)}
             self._flow_buckets[fid] = {}
             self._flow_undated[fid] = {}
-            self._flow_last_at[fid] = None
-            self._flow_pulse_last_at[fid] = None
+            self._flow_newest[fid] = {}
             self._flow_rings[fid] = []
         self._sha = sha
         self._atlas_ok = True
@@ -445,16 +452,10 @@ class TrafficIndex:
             kept = [c for c in ring if not isinstance(c.get("at"), (int, float)) or c["at"] >= floor_start]
             if len(kept) != len(ring):
                 self._flow_rings[fid] = kept
-            last = self._flow_last_at.get(fid)
-            if isinstance(last, (int, float)) and last < floor_start:
-                dated = [c["at"] for c in kept
-                         if isinstance(c.get("at"), (int, float)) and c.get("basis") != "pulse"]
-                self._flow_last_at[fid] = max(dated) if dated else None
-            plast = self._flow_pulse_last_at.get(fid)
-            if isinstance(plast, (int, float)) and plast < floor_start:
-                dated = [c["at"] for c in kept
-                         if isinstance(c.get("at"), (int, float)) and c.get("basis") == "pulse"]
-                self._flow_pulse_last_at[fid] = max(dated) if dated else None
+        for newest in self._flow_newest.values():
+            # a key whose newest row is older than the window has only rows older than the window
+            for k in [k for k, v in newest.items() if v < floor_start]:
+                del newest[k]
         for fid, buckets in self._flow_buckets.items():
             for b in [k for k in buckets if k < floor_start]:
                 del buckets[b]
@@ -552,22 +553,9 @@ class TrafficIndex:
             del self._unrouted[k]
         for k in [k for k in self._unrouted_undated if k[0] == "links"]:
             del self._unrouted_undated[k]
-        # last_at may now be stale; recompute lazily in snapshot from rings+buckets is complex,
-        # so recompute from remaining rings here (dated only).
-        for fid, ring in self._flow_rings.items():
-            dated = [c["at"] for c in ring
-                     if isinstance(c.get("at"), (int, float)) and c.get("basis") != "pulse"]
-            pdated = [c["at"] for c in ring
-                      if isinstance(c.get("at"), (int, float)) and c.get("basis") == "pulse"]
-            # last_at is the newest dated crossing: rings hold the newest, but after stripping
-            # the newest link may be gone; take the max of what remains (rings are newest-first).
-            best = max(dated) if dated else None
-            # buckets alone carry no timestamps beyond their hour; rings are authoritative here.
-            if best is None:
-                self._flow_last_at[fid] = None
-            else:
-                self._flow_last_at[fid] = best
-            self._flow_pulse_last_at[fid] = max(pdated) if pdated else None
+        for newest in self._flow_newest.values():
+            for k in [k for k in newest if k[1] == "links"]:
+                del newest[k]
 
     def _recount_links(self, window_start: float) -> None:
         self._strip_links()
@@ -643,14 +631,11 @@ class TrafficIndex:
                 b = _bucket(at)
                 cell = self._flow_buckets[fid].setdefault(b, {})
                 cell[(basis, source)] = cell.get((basis, source), 0) + 1
-                if basis == "pulse":
-                    cur = self._flow_pulse_last_at.get(fid)
-                    if cur is None or at > cur:
-                        self._flow_pulse_last_at[fid] = at
-                else:
-                    cur = self._flow_last_at.get(fid)
-                    if cur is None or at > cur:
-                        self._flow_last_at[fid] = at
+                newest = self._flow_newest[fid]
+                nk = (basis == "pulse", source)
+                cur = newest.get(nk)
+                if cur is None or at > cur:
+                    newest[nk] = at
             ring = self._flow_rings[fid]
             ring.append(crossing)
             ring.sort(key=lambda c: (c.get("at") is not None,
@@ -684,6 +669,10 @@ class TrafficIndex:
                     oa = old.get("at") or 0
                     if at > oa:
                         slot["example"] = crossing
+
+    def _last_at(self, fid: str, pulse: bool) -> float | None:
+        vals = [v for (is_pulse, _src), v in self._flow_newest.get(fid, {}).items() if is_pulse == pulse]
+        return max(vals) if vals else None
 
     # -- snapshot -----------------------------------------------------------------
     def snapshot(self, flow: str | None = None, source: str | None = None,
@@ -739,11 +728,11 @@ class TrafficIndex:
                 heat = "silent"
             flows[fid] = {"status": meta["status"], "rules": meta["rules"],
                           "d24": tot["d24"], "d7": tot["d7"],
-                          "last_at": self._flow_last_at.get(fid),
+                          "last_at": self._last_at(fid, False),
                           "heat": heat, "by_basis": tot["by_basis"],
                           "by_source": tot["by_source"],
                           "pulse_d7": tot["pulse_d7"],
-                          "pulse_last_at": self._flow_pulse_last_at.get(fid)}
+                          "pulse_last_at": self._last_at(fid, True)}
         coverage = {"records": 0, "declared": 0, "inferred": 0, "internal": 0,
                     "unrouted": 0, "ambiguous": 0, "pulse": 0}
         src_counts = {"journal": 0, "events": 0, "links": 0}
@@ -871,7 +860,7 @@ class TrafficIndex:
             if a is None or b is None:
                 diffs.append(f"flow {fid}: present in only one snapshot")
                 continue
-            for key in ("d24", "d7", "pulse_d7", "by_basis", "by_source"):
+            for key in ("d24", "d7", "pulse_d7", "by_basis", "by_source", "last_at", "pulse_last_at"):
                 if a[key] != b[key]:
                     diffs.append(f"flow {fid} {key}: {a[key]} != {b[key]}")
         res = {"equal": not diffs, "rebuild_ms": rebuild_ms, "differences": diffs[:20]}
