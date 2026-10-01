@@ -26,7 +26,10 @@ Standard library only. Output is deterministic.
 from __future__ import annotations
 
 import copy
+import html
+import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -191,7 +194,7 @@ def apply_overlay(doc: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any
 
     Call ``validate_overlay`` first. The result keeps only what the tour and ``explain`` read: ``repos`` is empty;
     ``evidence``, ``expect``, ``surfaces``, ``owns``, ``instances``, ``vocabularies`` and flow ``traffic`` rules are
-    gone; ``home`` is the public label. It does not pass ``model.validate``.
+    gone; ``home`` is the public label and a contract's ``format`` is dropped. It does not pass ``model.validate``.
     """
     doc = copy.deepcopy(doc)
     layers, comps, contracts, flows = (overlay[k] for k in ("layers", "components", "contracts", "flows"))
@@ -215,8 +218,8 @@ def apply_overlay(doc: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any
                 "producer": _rename(comps, contract["producer"]),
                 "consumers": [_rename(comps, c) for c in contract["consumers"]],
                 "status": contract["status"]}
-        if "format" in contract:
-            item["format"] = contract["format"]
+        # ``format`` is deliberately dropped: the tour never prints it, and copying it unchecked would let an
+        # unvalidated string through. Everything in the output is overlay text, a validated id or a status.
         out["contracts"].append(item)
     for flow in doc.get("flows", []):
         entry = flows[flow["id"]]
@@ -234,7 +237,8 @@ def apply_overlay_traffic(traffic_doc: dict[str, Any], overlay: dict[str, Any]) 
 
     Only what the tour reads is kept: ``schema``, ``generated``, the per-flow counts, and the ``silent`` and
     ``off_status`` crosschecks. The ``unrouted`` examples, ``rule_gaps``, sources and coverage are dropped, and so
-    is any flow the overlay does not name (its id would be private).
+    is any flow the overlay does not name (its id would be private). A non-string ``flow`` in ``off_status``
+    raises ``AtlasError``.
     """
     if not isinstance(traffic_doc, dict) or traffic_doc.get("schema") != TRAFFIC_SCHEMA:
         raise AtlasError(f"traffic: not an {TRAFFIC_SCHEMA} document")
@@ -250,6 +254,9 @@ def apply_overlay_traffic(traffic_doc: dict[str, Any], overlay: dict[str, Any]) 
     cross = cross if isinstance(cross, dict) else {}
     silent = cross.get("silent")
     off = cross.get("off_status")
+    for item in off if isinstance(off, list) else []:
+        if isinstance(item, dict) and "flow" in item and not isinstance(item["flow"], str):
+            raise AtlasError("traffic: crosschecks.off_status[].flow must be a string")
     out["crosschecks"] = {
         "silent": sorted(public[f] for f in silent if isinstance(f, str) and f in public)
         if isinstance(silent, list) else [],
@@ -263,14 +270,18 @@ def apply_overlay_traffic(traffic_doc: dict[str, Any], overlay: dict[str, Any]) 
 
 # ------------------------------------------------------------------------------------------ leak check
 
+MIN_TEXT_TERM = 12  # an original summary, trigger or gap shorter than this is not used as a term: too much noise
+
+
 def leak_terms(doc: dict[str, Any], overlay: dict[str, Any]) -> tuple[list[str], list[str]]:
     """``(substring terms, word terms)`` that the overlaid output must not contain.
 
-    Substring terms (matched case-insensitively anywhere): the overlay's own ``denylist``, every original title
-    that differs from its public title, and every repo ``remote``. Word terms (matched whole, case-insensitively,
-    where a hyphen or underscore counts as part of the word): every original id that differs from its public id,
-    every repo key, and every original ``home`` that differs from its public label. A word term that is itself a
-    public id or label of the overlay is public already and is left out.
+    Substring terms (matched anywhere): the overlay's own ``denylist``, every original title that differs from its
+    public title, every original summary, flow trigger and flow gap that differs from its public text (only when it
+    is at least ``MIN_TEXT_TERM`` characters, so a short common phrase does not flood the check), and every repo
+    ``remote``. Word terms (matched whole): every original id that differs from its public id, every repo key and
+    every original ``home`` that differs from its public label. A word term that is itself a public id or label of
+    the overlay is public already and is left out. Matching is described at ``leaks``.
     """
     subs: set[str] = {t for t in overlay.get("denylist", []) if isinstance(t, str)}
     words: set[str] = set()
@@ -280,11 +291,18 @@ def leak_terms(doc: dict[str, Any], overlay: dict[str, Any]) -> tuple[list[str],
             published.add(entry["id"])
             if entry["id"] != original:
                 words.add(original)
-    for kind in ("layers", "components", "contracts"):
+    for kind, names in (("layers", ("title", "summary")), ("components", ("title", "summary")),
+                        ("contracts", ("title", "summary")), ("flows", ("trigger", "gap"))):
         for item in doc.get(kind, []):
-            entry = overlay[kind].get(item.get("id"))
-            if entry is not None and isinstance(item.get("title"), str) and item["title"] != entry["title"]:
-                subs.add(item["title"])
+            entry = overlay[kind].get(item.get("id")) if isinstance(item, dict) else None
+            if entry is None:
+                continue
+            for name in names:
+                original = item.get(name)
+                if not isinstance(original, str) or original == entry.get(name):
+                    continue
+                if name == "title" or len(fold(original)) >= MIN_TEXT_TERM:
+                    subs.add(original)
     for comp in doc.get("components", []):
         entry = overlay["components"].get(comp.get("id"))
         if entry is not None:
@@ -298,16 +316,87 @@ def leak_terms(doc: dict[str, Any], overlay: dict[str, Any]) -> tuple[list[str],
     return sorted(subs), sorted(w for w in words if w not in published)
 
 
-def _word(term: str) -> re.Pattern[str]:
-    return re.compile(r"(?<![A-Za-z0-9_-])" + re.escape(term) + r"(?![A-Za-z0-9_-])", re.IGNORECASE)
+def fold(text: str) -> str:
+    """NFKC-normalised, case-folded text with every run of whitespace collapsed to one space."""
+    return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
+
+
+def _word(folded_term: str) -> re.Pattern[str]:
+    # Boundaries are ASCII letters and digits only, so "-" and "_" end a token: payments-gateway-v2 holds payments-gateway.
+    return re.compile(r"(?<![a-z0-9])" + re.escape(folded_term) + r"(?![a-z0-9])")
 
 
 def leaks(text: str, denylist: Any, words: Any = ()) -> list[str]:
-    """Each denylisted term found in ``text``, case-insensitive, sorted.
+    """Each denylisted term found in ``text``, sorted.
 
-    ``denylist`` terms match as substrings; ``words`` terms (optional) match only as whole words.
+    Both the text and the terms are folded first (NFKC, ``casefold``, whitespace collapsed), so case, width,
+    compatibility forms and spacing do not hide a term. ``denylist`` terms match as substrings; ``words`` terms
+    (optional) match only between ASCII-alphanumeric boundaries, so a hyphen or underscore ends a word. A term is
+    returned as it was given.
     """
-    lowered = text.lower()
-    found = {t for t in denylist if t and t.lower() in lowered}
-    found.update(t for t in words if t and _word(t).search(text))
+    folded = fold(text)
+    found = set()
+    for term in denylist:
+        key = fold(term) if isinstance(term, str) else ""
+        if key and key in folded:
+            found.add(term)
+    for term in words:
+        key = fold(term) if isinstance(term, str) else ""
+        if key and _word(key).search(folded):
+            found.add(term)
     return sorted(found)
+
+
+def _walk(value: Any, where: str):
+    """Every string in a JSON-like value, keys included, with the path that leads to it."""
+    if isinstance(value, str):
+        yield where, value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            here = f"{where}.{key}" if where else str(key)
+            yield f"{here} (key)", str(key)
+            yield from _walk(item, here)
+    elif isinstance(value, list):
+        for k, item in enumerate(value):
+            label = item["id"] if isinstance(item, dict) and isinstance(item.get("id"), str) else k
+            yield from _walk(item, f"{where}[{label}]")
+
+
+def public_fields(public: dict[str, Any], overlay: dict[str, Any]) -> list[tuple[str, str]]:
+    """Every string of the overlaid document, and the overlay title, as ``(field, text)``."""
+    fields: list[tuple[str, str]] = []
+    if isinstance(overlay.get("title"), str):
+        fields.append(("overlay.title", overlay["title"]))
+    for kind in KINDS:
+        fields.extend(_walk(public.get(kind, []), kind))
+    return fields
+
+
+def find_leaks(atlas: dict[str, Any], overlay: dict[str, Any], public: dict[str, Any], output: str,
+               *, markdown: bool) -> list[tuple[str, str]]:
+    """``(term, field)`` for every private term in the public tour; empty when it is clean.
+
+    The renderers escape (``|`` and ``<`` in Markdown, ``"`` and ``\\`` in JSON), and escaping can hide a term that
+    contains those characters, so the check does not trust the finished output alone. It runs on every string of
+    the overlaid document and the overlay title (before any escaping); on the rendered text as it is; on the
+    Markdown text with ``\\|`` and HTML entities undone; and, for JSON, on every string and key of the parsed output.
+    """
+    subs, words = leak_terms(atlas, overlay)
+    hits: set[tuple[str, str]] = set()
+
+    def check(text: str, field: str) -> None:
+        hits.update((term, field) for term in leaks(text, subs, words))
+
+    for field, text in public_fields(public, overlay):
+        check(text, field)
+    check(output, "the rendered tour")
+    if markdown:
+        check(html.unescape(output.replace("\\|", "|")), "the rendered tour (unescaped)")
+    else:
+        try:
+            parsed = json.loads(output)
+        except ValueError:
+            raise AtlasError("the JSON tour does not parse; refusing to publish it") from None
+        for field, text in _walk(parsed, "tour"):
+            check(text, field)
+    return sorted(hits)

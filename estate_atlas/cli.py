@@ -204,10 +204,13 @@ def _public_tour(args: argparse.Namespace, atlas: dict[str, Any], traffic: dict[
             text = "# A tour of " + spec["title"] + text[text.index("\n"):]
     else:
         text = _dump(explain.tour(public, public_traffic))
-    subs, words = overlay.leak_terms(atlas, spec)
-    found = overlay.leaks(text, subs, words)
+    found = overlay.find_leaks(atlas, spec, public, text, markdown=bool(args.md))
     if found:
-        raise UsageError("the public tour leaks private terms: %s" % ", ".join(repr(t) for t in found))
+        where: dict[str, list[str]] = {}
+        for term, field in found:
+            where.setdefault(term, []).append(field)
+        raise UsageError("the public tour leaks private terms: %s" % "; ".join(
+            "%r in %s" % (term, ", ".join(fields)) for term, fields in where.items()))
     return text
 
 
