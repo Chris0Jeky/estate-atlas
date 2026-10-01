@@ -1,6 +1,6 @@
 # estate-atlas: agent instructions
 
-Global laws: `~/.claude/rules/laws.md` (Claude) / `codex/AGENTS.md` in claude-config (Codex). They are binding.
+Contributors and coding agents: keep changes small, tested and reviewed; one pull request per change.
 Authority: `.agent-harness/tier.json` (T1 sandbox).
 
 ## What this is
