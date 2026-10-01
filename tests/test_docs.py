@@ -1,7 +1,7 @@
 """Docs checks against a fictional shop atlas.
 
-Port of the docs checks: marker safety, escaping, determinism, traffic
-wording, CRLF tolerance and the write/check round trip.
+Covers marker safety, escaping, determinism, traffic wording, CRLF
+tolerance and the write/check round trip.
 """
 from __future__ import annotations
 

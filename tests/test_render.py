@@ -1,7 +1,6 @@
 """Render checks against a fictional shop atlas.
 
-Port of the render checks: determinism, escaping, wording and structure,
-without any private names.
+Covers determinism, escaping, wording and structure.
 """
 from __future__ import annotations
 

@@ -27,7 +27,7 @@ It is standard-library Python (3.11+), with no dependencies, and is licensed GPL
 
 ## 2. Format (`estate-atlas@2`)
 
-The format is atlas@2 as it runs in production today:
+The format is atlas@2:
 - `repos`: name → `{remote, default_branch, paths: {host: path}}`;
 - `layers`;
 - `components`: `id`, `title`, `layer`, `home`, `status`, `summary`, `surfaces`, `owns`, `evidence`,
@@ -36,8 +36,8 @@ The format is atlas@2 as it runs in production today:
 - `flows`: `from`, `to`, `contract`, `trigger`, `status`, `gap`, `evidence`, `expect` and `traffic`;
 - `vocabularies`.
 
-The loader accepts `"schema": "estate-atlas@2"`, and also any value that ends in `/atlas@2`, so existing atlases
-keep working unchanged.
+The loader accepts `estate-atlas@2` and any namespaced `<namespace>/atlas@2`, so an embedding project can keep its
+own schema name.
 
 - **Statuses.** Components and contracts can be live, partial, planned or retired; flows can be live, partial,
   documented, planned or absent. Only a planned item (or a documented or absent flow) may carry `expect`.
@@ -61,7 +61,7 @@ edits count; it does not read `HEAD`.
 
 ## 4. Traffic engine (`traffic.py`)
 
-This is the console's routing engine, made reusable. Readers are injected:
+The traffic engine is a library: the caller injects the readers:
 - `journal_rows(after_id, since) -> [{id, at, producer, verb, actor, subject}]`;
 - `event_rows(after_id, since) -> [{id, at, kind, source, nodes}]`;
 - `links() -> [(doc_source, {from, rel, to, at?})]`;
@@ -98,9 +98,27 @@ python -m estate_atlas route atlas.json --journal F.jsonl [--events F.jsonl] [--
 ```
 
 `route` takes JSONL record files, prints `estate-atlas-traffic@1`, and exists so anyone can try routing without a
-daemon.
+running service.
 
 Exit codes: 0 means ok, 1 means drift or stale, 2 means invalid input.
+
+### The `live` input to `explain`
+
+`--live` (or the `live` argument of `explain.explain`) takes a JSON object of live facts, keyed by component id. A
+file shaped `{"schema": ..., "live": {...}}` is also accepted; the inner `live` object is used. For each component
+that has an entry, `explain` adds one "Running now" line. The entry reads:
+- `instances`: a count of running instances;
+- `by_status`: an object of status name to count, written `live` first and then alphabetically, for example
+  `{"live": 2, "idle": 1}`;
+- `failing`: a list of objects with an `intent` and a `subject`, one per failing condition (other keys are ignored).
+  The line names the first three as `<intent> on <subject>` and counts them all.
+
+Missing or malformed values count as zero or are skipped. A component with no entry gets no "Running now" line.
+
+```json
+{"web": {"instances": 3, "by_status": {"live": 2, "idle": 1},
+         "failing": [{"intent": "checkout-up", "subject": "web"}]}}
+```
 
 ## 6. Example (`examples/shop`)
 
@@ -112,5 +130,5 @@ A small fictional system, "a little shop": web, api, queue, worker, db and a pay
 
 ## 7. What never goes in
 
-There are no references to private systems, repositories, lanes, people, hosts or paths: not in code, tests,
+There are no references to private systems, repositories, people, hosts or paths: not in code, tests,
 examples or docs. The engine, the format and the example are generic.
