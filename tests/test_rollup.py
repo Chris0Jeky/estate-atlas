@@ -229,6 +229,51 @@ class RollupTests(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class UnbuiltIndexTests(unittest.TestCase):
+    def test_an_unbuilt_index_seals_no_day(self):
+        clock = Clock()
+        state = {"ok": False}
+        rows = [jrow(1, day_at(D2))]
+
+        def afn():
+            if not state["ok"]:
+                raise RuntimeError("atlas unreadable")
+            return "s1", EXPORT
+
+        def jr(after_id, since):
+            return [r for r in rows if r["id"] > after_id and r["at"] >= since]
+
+        index = T.TrafficIndex(journal_rows=jr, event_rows=lambda a, s: [], links=lambda: [],
+                               atlas=afn, now=clock)
+        tmp = Path(tempfile.mkdtemp(prefix="hist-test-"))
+        hist = H.TrafficHistory(tmp / "traffic_history.db")
+        try:
+            # never refreshed, then refreshed against a failing atlas: both are unbuilt
+            for refresh in (False, True):
+                if refresh:
+                    index.refresh()
+                self.assertFalse(index.built)
+                out = hist.rollup(index, jr, lambda a, s: [], lambda: [], NOW)
+                self.assertEqual(out["days_written"], 0)
+                self.assertEqual(out["skipped"], "index not built")
+                self.assertIsNone(hist.last_day())
+                self.assertEqual(hist.days_stored(), 0)
+                self.assertIsNone(cell_of(hist, D2, "fa"))
+            # a successful refresh lets the next rollup write the days
+            state["ok"] = True
+            clock.t += 16
+            index.refresh()
+            self.assertTrue(index.built)
+            out = hist.rollup(index, jr, lambda a, s: [], lambda: [], NOW)
+            self.assertNotIn("skipped", out)
+            self.assertEqual(out["days_written"], 90)
+            self.assertEqual(hist.last_day(), D3)
+            self.assertEqual(cell_of(hist, D2, "fa")[0], 1)
+        finally:
+            hist.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class WeeklyTests(unittest.TestCase):
     def test_windows_oldest_first(self):
         rows = [{"day": D1, "flow": "fa", "crossings": 2, "pulse": 1},

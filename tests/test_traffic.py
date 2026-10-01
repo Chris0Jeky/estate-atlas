@@ -455,6 +455,79 @@ SHOP_ATLAS = {
 T0 = 1_790_000_000.0
 
 
+class LastAtTests(unittest.TestCase):
+    """last_at and pulse_last_at are exact per basis, however full the 20-entry ring is of the other basis."""
+
+    LA_FLOWS = [{"id": "fl", "from": "front", "to": "back", "status": "live",
+                 "traffic": [{"source": "journal", "producer": "gate", "verb": "merged"},
+                             {"source": "journal", "producer": "beat", "pulse": True}]}]
+    T_DECLARED = NOW - 100 * H
+    PULSE_NEWEST = NOW - 10 * H
+
+    def _index(self):
+        clock = Clock()
+        rows = [jrow(1, self.T_DECLARED)]
+        rows += [jrow(2 + i, NOW - 30 * H + i * H, producer="beat", verb="thump") for i in range(21)]
+        self.assertEqual(rows[-1]["at"], self.PULSE_NEWEST)
+        export = {"components": COMPS, "flows": self.LA_FLOWS}
+        ti = T.TrafficIndex(journal_rows=lambda a, s: [r for r in rows if r["id"] > a and r["at"] >= s],
+                            event_rows=lambda a, s: [], links=lambda: [],
+                            atlas=lambda: ("s1", export), now=clock)
+        ti.refresh()
+        return ti, clock
+
+    def _check(self, ti):
+        fl = ti.snapshot()["flows"]["fl"]
+        self.assertEqual(fl["last_at"], self.T_DECLARED)
+        self.assertEqual(fl["pulse_last_at"], self.PULSE_NEWEST)
+        self.assertGreater(fl["d7"], 0)
+        return fl
+
+    def test_declared_survives_a_ring_full_of_pulses(self):
+        ti, _ = self._index()
+        self.assertTrue(all(c["basis"] == "pulse" for c in ti.snapshot(flow="fl")["records"]))
+        self._check(ti)
+        self.assertTrue(ti.verify()["equal"])
+
+    def test_the_strip_and_recount_path_keeps_it(self):
+        ti, clock = self._index()
+        clock.t += 16
+        ti.refresh()
+        self._check(ti)
+        clock.t += 61
+        v = ti.verify()
+        self.assertTrue(v["equal"], v)
+
+    def test_expiry_drops_only_the_aged_basis(self):
+        ti, clock = self._index()
+        clock.t += 80 * H  # the declared row (100 h old) leaves the 168 h window; the pulses stay
+        ti._last_refresh = clock.t - 16
+        ti.refresh()
+        fl = ti.snapshot()["flows"]["fl"]
+        self.assertIsNone(fl["last_at"])
+        self.assertEqual(fl["pulse_last_at"], self.PULSE_NEWEST)
+        v = ti.verify()
+        self.assertTrue(v["equal"], v)
+
+    def test_a_snapshot_after_an_hour_boundary_without_refresh_agrees_with_verify(self):
+        ti, clock = self._index()
+        # The declared row is 100 h old; move the clock so it falls below the window floor
+        # without a refresh: the counts drop it at snapshot time, and last_at must too.
+        clock.t += 69 * H
+        fl = ti.snapshot()["flows"]["fl"]
+        self.assertIsNone(fl["last_at"])
+        self.assertEqual(fl["pulse_last_at"], self.PULSE_NEWEST)
+        v = ti.verify()
+        self.assertTrue(v["equal"], v)
+
+    def test_verify_compares_last_at(self):
+        ti, _ = self._index()
+        ti._flow_newest["fl"][(False, "journal")] = self.T_DECLARED + 5
+        v = ti.verify()
+        self.assertFalse(v["equal"])
+        self.assertTrue(any("last_at" in d for d in v["differences"]), v)
+
+
 class RouteFilesTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="route-files-"))
