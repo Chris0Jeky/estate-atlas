@@ -22,6 +22,7 @@ It is standard-library Python (3.11+), with no dependencies, and is licensed GPL
 | `estate_atlas/render.py` | the offline HTML page and mermaid | `render_html(doc, check=None) -> str`, `render_mermaid(doc, view) -> str`, `order_cards(doc)` |
 | `estate_atlas/docs.py` | marked Markdown blocks and the overview SVG | `glance_svg(doc)`, `owners_block`, `layers_block`, `traffic_block(doc, traffic)`, `replace_blocks(text, blocks)`, `write(...)`, `check_docs(...)` |
 | `estate_atlas/explain.py` | plain-English explanations and the tour | `explain(doc, id, traffic=None, live=None)`, `tour(doc, traffic=None)`, `render_tour_md(doc, traffic=None)` |
+| `estate_atlas/overlay.py` | a public overlay: public wording and ids for a private atlas, with a leak check | `load_overlay(path)`, `validate_overlay(overlay, doc)`, `apply_overlay(doc, overlay)`, `apply_overlay_traffic(traffic, overlay)`, `leak_terms(doc, overlay)`, `leaks(text, denylist, words=())` |
 | `estate_atlas/cli.py` | `python -m estate_atlas <verb>` | the verbs `validate`, `check`, `export`, `render`, `docs`, `explain`, `tour` and `route` |
 | `estate_atlas/__main__.py` | the entry point | calls `cli.main()` |
 
@@ -93,7 +94,7 @@ python -m estate_atlas export atlas.json [--check] [--out F]
 python -m estate_atlas render html|mermaid atlas.json [--out F]
 python -m estate_atlas docs write|check atlas.json --doc ARCH.md [--traffic T]
 python -m estate_atlas explain atlas.json <id> [--traffic T] [--live L]
-python -m estate_atlas tour atlas.json [--md] [--traffic T]
+python -m estate_atlas tour atlas.json [--md] [--traffic T] [--overlay O]
 python -m estate_atlas route atlas.json --journal F.jsonl [--events F.jsonl] [--links F.json]
 ```
 
@@ -128,7 +129,47 @@ A small fictional system, "a little shop": web, api, queue, worker, db and a pay
 - Sample `journal.jsonl` and `events.jsonl` let `route` light some flows, leave one silent, and show one pulse
   flow.
 
-## 7. What never goes in
+## 7. Public overlay (`overlay.py`)
+
+A project can keep its atlas private and still publish a tour of it. An **overlay** (`estate-atlas-overlay@1`) is a
+JSON file that gives every layer, component, contract and flow public wording and a public id:
+
+```json
+{"schema": "estate-atlas-overlay@1",
+ "title": "optional public name of the system",
+ "denylist": ["extra term", "..."],
+ "layers":     {"<layer id>":     {"id": "<public id>", "title": "...", "summary": "..."}},
+ "components": {"<component id>": {"id": "<public id>", "title": "...", "summary": "...", "home": "<public label>"}},
+ "contracts":  {"<contract id>":  {"id": "<public id>", "title": "...", "summary": "..."}},
+ "flows":      {"<flow id>":      {"id": "<public id>", "trigger": "...", "gap": "..."}}}
+```
+
+- **Coverage is total.** Every layer, component, contract and flow has an entry and no entry names an unknown id;
+  `validate_overlay` lists every missing or unknown id. A flow entry carries `gap` when, and only when, the flow has
+  one. Public text follows the model's limits for that field, and public ids follow its id patterns and are unique
+  per kind.
+- **The rewrite.** `apply_overlay` returns a deep copy with public text and public ids, renamed everywhere they are
+  referenced, and `home` replaced by the public label. It keeps only what the tour and `explain` read: `repos` is
+  `{}` and `evidence`, `expect`, `surfaces`, `owns`, `instances`, `vocabularies` and flow `traffic` rules are gone.
+  The result is deliberately **not** a valid atlas: do not pass it to `model.validate` or `check`.
+- **Traffic.** `apply_overlay_traffic` renames the flow ids of an `estate-atlas-traffic@1` document so the tour's
+  "this week" numbers still show. It keeps `generated`, the per-flow counts and the `silent` and `off_status`
+  crosschecks, and drops everything else: `unrouted` examples, `rule_gaps`, sources, coverage and any flow the
+  overlay does not name.
+- **Leak check.** `leak_terms(doc, overlay)` returns what the output must not contain. As case-insensitive
+  substrings: the overlay's `denylist`, every original title that differs from its public title, and every repo
+  `remote`. As whole words, where a hyphen or underscore is part of the word: every original id that differs from
+  its public id, every repo key and every original `home` that differs from its label. A word that the overlay
+  itself publishes (as an id or label) is left out. `leaks(text, denylist, words=())` returns the terms found,
+  sorted.
+- **CLI.** `tour atlas.json --md --overlay O.json [--traffic T]` validates the overlay, renders the tour from the
+  overlaid document, runs the leak check on the output and exits 2, naming the terms and printing or writing
+  nothing, if anything leaks. A `title` in the overlay replaces "the estate" in the heading. `--overlay` does not
+  combine with `--check`.
+- **Keep the overlay private.** Its keys are the original ids, so the overlay file belongs with the private atlas;
+  only its output is published.
+
+## 8. What never goes in
 
 There are no references to private systems, repositories, people, hosts or paths: not in code, tests,
 examples or docs. The engine, the format and the example are generic.
