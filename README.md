@@ -22,4 +22,6 @@ python -m estate_atlas tour examples/shop/atlas.json --md --overlay tests/fixtur
 
 Design: [docs/DESIGN.md](docs/DESIGN.md).
 
+Consumer proof and its limits: [docs/QUALIFICATION.md](docs/QUALIFICATION.md).
+
 > Status: pre-release.
