@@ -19,6 +19,9 @@ Git repository and set a fictional origin URL and `origin/main` ref locally. No 
 is needed. Before and after every source check they compare HEAD, refs, index bytes, local config and status,
 including a dirty working file and staged draft. Fixture setup intentionally writes its own Git state; `check`
 must leave it unchanged. Temporary files and Git repositories are removed after the tests.
+Fixture Git commands discard inherited Git environment settings and ignore global/system configuration,
+so checkout, index, template and config redirection cannot escape the disposable repository. A personal Git
+ignore file cannot hide the fictional sources.
 
 These source-check subprocess tests set PYTHONPATH to the source root so an outside working directory can find
 the package. They do not prove wheel installation; use the separate installation path below.
@@ -97,6 +100,9 @@ venv whose path contains spaces and installs the built wheel with `pip install -
 fictional fixtures and the consumer test file into an outside directory. Neither PYTHONPATH nor PYTHONHOME is
 passed to the build, install or installed CLI subprocesses. Inherited pip settings are removed before setting
 controlled offline options, so external find-links or installation destinations cannot redirect the proof.
+Inherited Git environment settings are also removed and global/system Git configuration is isolated before
+reading source identity or setting up fixtures. Git optional locks remain disabled.
+Source status and fixture setup also disable personal Git ignore files.
 
 Both the venv Python's `-m estate_atlas` and the installed `estate-atlas` console entry point run help and the same
 consumer proof suite. Installed tests use copied fixtures and temporary repositories outside the checkout;

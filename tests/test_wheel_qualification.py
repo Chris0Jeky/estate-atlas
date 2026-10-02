@@ -58,6 +58,63 @@ class WheelQualificationTests(unittest.TestCase):
                                 env=env, capture_output=True, check=True)
         self.assertEqual(result.stdout.strip(), b"False")
 
+    def test_runner_git_environment_preserves_external_index_and_repository(self):
+        runner = self.runner()
+        with tempfile.TemporaryDirectory(prefix="atlas git isolation ") as temp:
+            root = Path(temp)
+            env = {name: value for name, value in os.environ.items() if not name.upper().startswith("GIT_")}
+            env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_OPTIONAL_LOCKS="0")
+            protected, target = root / "protected checkout", root / "source checkout"
+            for repo in (protected, target):
+                repo.mkdir()
+                subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], env=env, check=True)
+                subprocess.run(["git", "-C", str(repo), "config", "core.excludesFile", os.devnull], env=env, check=True)
+                (repo / "sentinel.txt").write_text("fictional sentinel\n", encoding="utf-8")
+                subprocess.run(["git", "-c", f"core.excludesFile={os.devnull}", "-C", str(repo), "add", "sentinel.txt"], env=env, check=True)
+            protected_index = protected / ".git/index"
+            saved = protected_index.read_bytes()
+            (target / "draft.txt").write_text("fictional draft\n", encoding="utf-8")
+            poisoned = runner.clean_environment(dict(env, GIT_INDEX_FILE=str(protected_index)))
+            subprocess.run(["git", "-C", str(target), "add", "draft.txt"], env=poisoned, check=True)
+            self.assertEqual(protected_index.read_bytes(), saved, "fixture Git changed an external index")
+            poisoned = runner.clean_environment(dict(env, GIT_DIR=str(protected / ".git"),
+                                                     GIT_WORK_TREE=str(protected),
+                                                     GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.bare",
+                                                     GIT_CONFIG_VALUE_0="true"))
+            result = subprocess.run(["git", "-C", str(target), "rev-parse", "--absolute-git-dir"],
+                                    env=poisoned, capture_output=True, check=True)
+            self.assertEqual(Path(result.stdout.decode().strip()).resolve(), (target / ".git").resolve())
+
+    def test_source_consumer_fixture_git_preserves_external_index(self):
+        consumer = load_file("consumer_git_isolation", ROOT / "tests/test_consumer_qualification.py")
+        with tempfile.TemporaryDirectory(prefix="atlas external git ") as temp:
+            external_index = Path(temp) / "external index"
+            with patch.dict(os.environ, {"GIT_INDEX_FILE": str(external_index)}):
+                case = consumer.ConsumerQualificationTests("test_origin_and_worktree_proof_leave_git_unchanged")
+                case.setUp()
+                try:
+                    case.make_repo()
+                    self.assertFalse(external_index.exists(), "fixture setup wrote an external index")
+                    self.assertTrue((case.repo / ".git/index").is_file())
+                    self.assertEqual(case.checked()[1]["status"], "ok")
+                finally:
+                    case.doCleanups()
+
+    def test_personal_ignore_file_cannot_hide_fictional_sources(self):
+        consumer = load_file("consumer_ignore_isolation", ROOT / "tests/test_consumer_qualification.py")
+        with tempfile.TemporaryDirectory(prefix="atlas personal ignore ") as temp:
+            config = Path(temp) / "config"
+            (config / "git").mkdir(parents=True)
+            (config / "git/ignore").write_text("*\n", encoding="utf-8")
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(config)}):
+                case = consumer.ConsumerQualificationTests("test_origin_and_worktree_proof_leave_git_unchanged")
+                case.setUp()
+                try:
+                    case.make_repo()
+                    self.assertEqual(case.checked()[1]["status"], "ok")
+                finally:
+                    case.doCleanups()
+
     def test_installed_identity_checks_survive_optimized_python(self):
         runner = self.runner()
         self.assertTrue(callable(getattr(runner, "validate_installed", None)), "installed proof needs explicit identity checks")

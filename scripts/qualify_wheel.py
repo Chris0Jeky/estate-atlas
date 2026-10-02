@@ -29,9 +29,10 @@ def clean_environment(environment=None):
     env = dict(os.environ if environment is None else environment)
     for name in list(env):
         if (name.upper() in {"PYTHONPATH", "PYTHONHOME", "PYTHONOPTIMIZE"}
-                or name.upper().startswith(("PIP_", "ATLAS_QUALIFICATION_"))):
+                or name.upper().startswith(("PIP_", "GIT_", "ATLAS_QUALIFICATION_"))):
             del env[name]
     env.update(PYTHONIOENCODING="utf-8", GIT_OPTIONAL_LOCKS="0",
+               GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
                PIP_NO_INDEX="1", PIP_DISABLE_PIP_VERSION_CHECK="1",
                PIP_CONFIG_FILE=os.devnull)
     return env
@@ -161,7 +162,7 @@ def qualify(source, python, report_path, wheelhouses=()):
         report["interpreter"] = json.loads(identity.stdout)
         if report["interpreter"]["version_info"] < [3, 11, 0]:
             raise RuntimeError("qualification requires Python 3.11 or later")
-        git = ["git", "-c", f"safe.directory={source}", "-C", source]
+        git = ["git", "-c", f"safe.directory={source}", "-c", f"core.excludesFile={os.devnull}", "-C", source]
         report["source_head"] = run([*git, "rev-parse", "HEAD"], report_path.parent).stdout.decode().strip()
         report["source_status"] = run([*git, "status", "--porcelain=v1", "--untracked-files=all"], report_path.parent).stdout.decode()
         directories = list(map(Path, wheelhouses))

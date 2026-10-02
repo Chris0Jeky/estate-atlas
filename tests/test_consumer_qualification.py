@@ -25,7 +25,7 @@ class ConsumerQualificationTests(unittest.TestCase):
         self.overlay = self.root / "tests/fixtures/shop-overlay.json"
         self.doc = json.loads((self.shop / "atlas.json").read_text(encoding="utf-8"))
         self.atlas = self.write_json("atlas.json", self.doc)
-        self.env = os.environ.copy()
+        self.env = {name: value for name, value in os.environ.items() if not name.upper().startswith("GIT_")}
         command = os.environ.get("ATLAS_QUALIFICATION_COMMAND")
         self.command = json.loads(command) if command else [sys.executable, "-m", "estate_atlas"]
         if command:
@@ -35,7 +35,7 @@ class ConsumerQualificationTests(unittest.TestCase):
         else:
             self.env["PYTHONPATH"] = str(ROOT)
         self.env["PYTHONIOENCODING"] = "utf-8"
-        self.env["GIT_OPTIONAL_LOCKS"] = "0"
+        self.env.update(GIT_OPTIONAL_LOCKS="0", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
 
     def write_json(self, name, doc):
         path = self.directory / name
@@ -68,6 +68,7 @@ class ConsumerQualificationTests(unittest.TestCase):
         self.git("config", "user.name", "Fictional Shop")
         self.git("config", "user.email", "shop@example.invalid")
         self.git("config", "commit.gpgsign", "false")
+        self.git("config", "core.excludesFile", os.devnull)
         hooks = self.directory / "empty hooks"
         hooks.mkdir()
         self.git("config", "core.hooksPath", str(hooks))
