@@ -32,6 +32,18 @@ class BoundaryTests(unittest.TestCase):
         self.assertNotIn('<!-- atlas:end layers -->', docs.layers_block(atlas))
         self.assertNotIn('<img src=x', docs.glance_svg(atlas))
         self.assertNotIn('<img src=x', render.render_html(atlas))
+        with tempfile.TemporaryDirectory() as temp:
+            source, target = Path(temp)/'atlas.json', Path(temp)/'ARCH.md'
+            source.write_text(json.dumps(doc), encoding='utf-8')
+            target.write_text('\n'.join(f'<!-- atlas:begin {name} -->\n<!-- atlas:end {name} -->'
+                                        for name in docs.BLOCK_NAMES), encoding='utf-8')
+            self.assertEqual(docs.write(source, target)[0], 0)
+            saved = target.read_bytes()
+            svg = target.with_name('atlas-glance.svg').read_bytes()
+            self.assertEqual(docs.check_docs(source, target)[0], 0)
+            self.assertEqual(docs.write(source, target)[0], 0)
+            self.assertEqual(target.read_bytes(), saved)
+            self.assertEqual(target.with_name('atlas-glance.svg').read_bytes(), svg)
 
     def test_strict_record_files_refuse_without_replacing_output(self):
         env = dict(os.environ, PYTHONIOENCODING="utf-8")
