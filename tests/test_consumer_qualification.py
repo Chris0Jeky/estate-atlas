@@ -13,8 +13,6 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SHOP = ROOT / "examples" / "shop"
-OVERLAY = ROOT / "tests" / "fixtures" / "shop-overlay.json"
 
 
 class ConsumerQualificationTests(unittest.TestCase):
@@ -22,10 +20,20 @@ class ConsumerQualificationTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory(prefix="atlas consumer ")
         self.addCleanup(temp.cleanup)
         self.directory = Path(temp.name)
-        self.doc = json.loads((SHOP / "atlas.json").read_text(encoding="utf-8"))
+        self.root = Path(os.environ.get("ATLAS_QUALIFICATION_ROOT", ROOT))
+        self.shop = self.root / "examples/shop"
+        self.overlay = self.root / "tests/fixtures/shop-overlay.json"
+        self.doc = json.loads((self.shop / "atlas.json").read_text(encoding="utf-8"))
         self.atlas = self.write_json("atlas.json", self.doc)
         self.env = os.environ.copy()
-        self.env["PYTHONPATH"] = str(ROOT)
+        command = os.environ.get("ATLAS_QUALIFICATION_COMMAND")
+        self.command = json.loads(command) if command else [sys.executable, "-m", "estate_atlas"]
+        if command:
+            for name in list(self.env):
+                if name.upper() in {"PYTHONPATH", "PYTHONHOME"}:
+                    del self.env[name]
+        else:
+            self.env["PYTHONPATH"] = str(ROOT)
         self.env["PYTHONIOENCODING"] = "utf-8"
         self.env["GIT_OPTIONAL_LOCKS"] = "0"
 
@@ -35,8 +43,16 @@ class ConsumerQualificationTests(unittest.TestCase):
         return path
 
     def cli(self, *args):
-        return subprocess.run([sys.executable, "-m", "estate_atlas", *map(str, args)],
-                              cwd=self.directory, env=self.env, capture_output=True, timeout=30)
+        command = [*self.command, *map(str, args)]
+        result = subprocess.run(command, cwd=self.directory, env=self.env, capture_output=True, timeout=30)
+        log = self.env.get("ATLAS_QUALIFICATION_COMMAND_LOG")
+        if log:
+            with Path(log).open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({"command": command, "cwd": str(self.directory),
+                                         "returncode": result.returncode,
+                                         "stdout": result.stdout.decode("utf-8", errors="replace"),
+                                         "stderr": result.stderr.decode("utf-8", errors="replace")}) + "\n")
+        return result
 
     def git(self, *args):
         return subprocess.run(["git", "-C", str(self.repo), *args], env=self.env,
@@ -47,7 +63,7 @@ class ConsumerQualificationTests(unittest.TestCase):
             self.skipTest("Git is required for source qualification")
         self.repo = self.directory / "shop checkout"
         self.repo.mkdir()
-        shutil.copytree(SHOP / "src", self.repo / "src")
+        shutil.copytree(self.shop / "src", self.repo / "src")
         self.git("init", "-q", "-b", "main")
         self.git("config", "user.name", "Fictional Shop")
         self.git("config", "user.email", "shop@example.invalid")
@@ -69,6 +85,8 @@ class ConsumerQualificationTests(unittest.TestCase):
             "index": hashlib.sha256((self.repo / ".git/index").read_bytes()).digest(),
             "config": (self.repo / ".git/config").read_bytes(),
             "status": status,
+            "contents": {p.relative_to(self.repo).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                         for p in self.repo.rglob("*") if p.is_file() and ".git" not in p.relative_to(self.repo).parts},
         }
 
     def checked(self, atlas=None, *extra):
@@ -129,8 +147,8 @@ class ConsumerQualificationTests(unittest.TestCase):
         code, report = self.checked(atlas)
         self.assertEqual((code, report["status"]), (0, "ok"))
         self.assertIn({"owner": "flows.api-to-queue", "refs": 1}, report["promotable"])
-        traffic = self.cli("route", atlas, "--journal", SHOP / "journal.jsonl",
-                           "--events", SHOP / "events.jsonl")
+        traffic = self.cli("route", atlas, "--journal", self.shop / "journal.jsonl",
+                           "--events", self.shop / "events.jsonl")
         self.assertEqual((traffic.returncode, traffic.stderr), (0, b""))
         snapshot = json.loads(traffic.stdout)
         self.assertEqual(snapshot["flows"]["api-to-queue"]["by_basis"]["declared"], 8)
@@ -151,16 +169,16 @@ class ConsumerQualificationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         snapshot = json.loads(result.stdout)
         self.assertEqual((snapshot["generated"], snapshot["coverage"]["records"]), (0, 0))
-        observed = self.cli("route", self.atlas, "--journal", SHOP / "journal.jsonl")
+        observed = self.cli("route", self.atlas, "--journal", self.shop / "journal.jsonl")
         self.assertEqual(observed.returncode, 0, observed.stderr)
         later = str(json.loads(observed.stdout)["generated"] + 30 * 86400)
-        expired = self.cli("route", self.atlas, "--journal", SHOP / "journal.jsonl", "--now", later)
+        expired = self.cli("route", self.atlas, "--journal", self.shop / "journal.jsonl", "--now", later)
         self.assertEqual(expired.returncode, 0, expired.stderr)
         self.assertEqual(json.loads(expired.stdout)["coverage"]["records"], 0)
 
     def test_public_tour_is_deterministic_and_refusal_preserves_output(self):
         output = self.directory / "public.md"
-        args = ("tour", self.atlas, "--md", "--overlay", OVERLAY)
+        args = ("tour", self.atlas, "--md", "--overlay", self.overlay)
         first, second = self.cli(*args), self.cli(*args)
         self.assertEqual((first.returncode, first.stderr), (0, b""))
         self.assertTrue(first.stdout)
@@ -173,7 +191,7 @@ class ConsumerQualificationTests(unittest.TestCase):
         self.assertEqual(self.cli(*args, "--out", output).returncode, 0)
         self.assertEqual(output.read_bytes(), saved)
         marker = "cobalt-vault-sentinel"
-        denied = json.loads(OVERLAY.read_text(encoding="utf-8"))
+        denied = json.loads(self.overlay.read_text(encoding="utf-8"))
         denied["denylist"] = [marker]
         denied["components"]["api"]["summary"] = marker
         invalid = copy.deepcopy(denied)
@@ -181,6 +199,9 @@ class ConsumerQualificationTests(unittest.TestCase):
         for name, spec in (("denied.json", denied), ("invalid.json", invalid)):
             with self.subTest(name=name):
                 overlay = self.write_json(name, spec)
+                refused = self.cli("tour", self.atlas, "--md", "--overlay", overlay)
+                self.assertEqual((refused.returncode, refused.stdout), (2, b""))
+                self.assertEqual(refused.stderr.strip(), b"estate-atlas: public tour refused; inspect the inputs privately.")
                 result = self.cli("tour", self.atlas, "--md", "--overlay", overlay, "--out", output)
                 self.assertEqual((result.returncode, result.stdout), (2, b""))
                 self.assertEqual(result.stderr.strip(), b"estate-atlas: public tour refused; inspect the inputs privately.")
@@ -188,7 +209,7 @@ class ConsumerQualificationTests(unittest.TestCase):
                 self.assertEqual(output.read_bytes(), saved)
 
     def test_workspace_and_stale_tour_through_positional_cli(self):
-        workspace = ROOT / "examples/workspace/atlas.json"
+        workspace = self.root / "examples/workspace/atlas.json"
         result = self.cli("validate", workspace)
         self.assertEqual((result.returncode, result.stderr), (0, b""))
         output = self.directory / "tour.md"
@@ -199,6 +220,74 @@ class ConsumerQualificationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn(b"stale", result.stderr)
 
+    def test_positional_route_explain_render_and_docs_are_deterministic(self):
+        traffic = self.directory / "traffic.json"
+        args = ("route", self.atlas, "--journal", self.shop / "journal.jsonl",
+                "--events", self.shop / "events.jsonl", "--now", "1790000000", "--out", traffic)
+        self.assertEqual(self.cli(*args).returncode, 0)
+        saved = traffic.read_bytes()
+        self.assertGreater(json.loads(saved)["coverage"]["records"], 0)
+        self.assertEqual(self.cli(*args).returncode, 0)
+        self.assertEqual(traffic.read_bytes(), saved)
+        for args in (("explain", self.atlas, "worker", "--traffic", traffic),
+                     ("render", "html", self.atlas), ("render", "mermaid", self.atlas)):
+            with self.subTest(command=args):
+                first, second = self.cli(*args), self.cli(*args)
+                self.assertEqual((first.returncode, first.stderr), (0, b""))
+                self.assertTrue(first.stdout)
+                self.assertEqual(first.stdout, second.stdout)
+                self.assertEqual((second.returncode, second.stderr), (0, b""))
+        output = self.directory / "atlas.html"
+        args = ("render", "html", self.atlas, "--out", output)
+        self.assertEqual(self.cli(*args).returncode, 0)
+        saved = output.read_bytes()
+        self.assertEqual(self.cli(*args).returncode, 0)
+        self.assertEqual(output.read_bytes(), saved)
+        doc = self.directory / "architecture.md"
+        doc.write_text("# Fictional architecture\n\n" + "\n\n".join(
+            f"<!-- atlas:begin {block} -->\n<!-- atlas:end {block} -->"
+            for block in ("glance", "owners", "layers", "traffic")) + "\n", encoding="utf-8")
+        svg = self.directory / "atlas-glance.svg"
+        args = (self.atlas, "--doc", doc, "--svg", svg)
+        self.assertEqual(self.cli("docs", "write", *args).returncode, 0)
+        saved_doc, saved_svg = doc.read_bytes(), svg.read_bytes()
+        self.assertEqual(self.cli("docs", "write", *args).returncode, 0)
+        self.assertEqual((doc.read_bytes(), svg.read_bytes()), (saved_doc, saved_svg))
+        self.assertEqual(self.cli("docs", "check", *args).returncode, 0)
+        self.assertEqual((doc.read_bytes(), svg.read_bytes()), (saved_doc, saved_svg))
+        svg.write_bytes(saved_svg + b"\n<!-- stale -->\n")
+        before = doc.read_bytes(), svg.read_bytes()
+        self.assertEqual(self.cli("docs", "check", *args).returncode, 1)
+        self.assertEqual((doc.read_bytes(), svg.read_bytes()), before)
+        bad = self.write_json("invalid-traffic.json", {"schema": "invalid"})
+        self.assertEqual(self.cli("docs", "write", *args, "--traffic", bad).returncode, 2)
+        self.assertEqual((doc.read_bytes(), svg.read_bytes()), before)
+
+
+class QualificationResult(unittest.TextTestResult):
+    """Machine-readable evidence for the installed runner, alongside unittest output."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.test_names = []
+
+    def startTest(self, test):
+        self.test_names.append(test._testMethodName)
+        super().startTest(test)
+
 
 if __name__ == "__main__":
-    unittest.main()
+    receipt = os.environ.get("ATLAS_QUALIFICATION_RESULT")
+    if not receipt:
+        unittest.main()
+    else:
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(ConsumerQualificationTests)
+        result = unittest.TextTestRunner(verbosity=2, resultclass=QualificationResult).run(suite)
+        Path(receipt).write_text(json.dumps({
+            "tests_run": result.testsRun, "test_names": result.test_names,
+            "successful": result.wasSuccessful(), "failures": len(result.failures),
+            "errors": len(result.errors), "skipped": len(result.skipped),
+            "expected_failures": len(result.expectedFailures),
+            "unexpected_successes": len(result.unexpectedSuccesses),
+        }, indent=2) + "\n", encoding="utf-8")
+        raise SystemExit(0 if result.wasSuccessful() else 1)
