@@ -162,7 +162,7 @@ def qualify(source, python, report_path, wheelhouses=()):
         report["interpreter"] = json.loads(identity.stdout)
         if report["interpreter"]["version_info"] < [3, 11, 0]:
             raise RuntimeError("qualification requires Python 3.11 or later")
-        git = ["git", "-c", f"safe.directory={source}", "-c", f"core.excludesFile={os.devnull}", "-C", source]
+        git = ["git", "-c", f"safe.directory={source.as_posix()}", "-c", f"core.excludesFile={os.devnull}", "-C", source]
         report["source_head"] = run([*git, "rev-parse", "HEAD"], report_path.parent).stdout.decode().strip()
         report["source_status"] = run([*git, "status", "--porcelain=v1", "--untracked-files=all"], report_path.parent).stdout.decode()
         directories = list(map(Path, wheelhouses))

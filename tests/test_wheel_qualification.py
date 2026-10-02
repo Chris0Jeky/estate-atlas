@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -228,6 +229,53 @@ class WheelQualificationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "outside"):
                 runner.require_outside_git(root / "ignored receipts/report.json")
             runner.require_outside_git(root.parent / "atlas receipt.json")
+
+    def test_source_identity_uses_precise_portable_git_trust_exception(self):
+        if not shutil.which("git"):
+            self.skipTest("Git is required for source identity proof")
+        runner = self.runner()
+        clean_environment = runner.clean_environment
+        with tempfile.TemporaryDirectory(prefix="atlas source ownership ") as temp:
+            root = Path(temp)
+            hooks = root / "empty hooks"
+            hooks.mkdir()
+            env = clean_environment()
+            source, unrelated = root / "source checkout with spaces", root / "unrelated checkout with spaces"
+            for repo in (source, unrelated):
+                repo.mkdir()
+                (repo / "sentinel.txt").write_text("Fictional " + repo.name + "\n", encoding="utf-8")
+                commands = (("init", "-q", "-b", "main"),
+                            ("config", "user.name", "Fictional Shop"),
+                            ("config", "user.email", "shop@example.invalid"),
+                            ("config", "commit.gpgsign", "false"),
+                            ("config", "core.hooksPath", str(hooks)),
+                            ("config", "core.excludesFile", os.devnull),
+                            ("add", "sentinel.txt"), ("commit", "-q", "-m", "Add fictional sentinel"))
+                for args in commands:
+                    subprocess.run(["git", "-C", str(repo), *args], env=env,
+                                   capture_output=True, check=True, timeout=30)
+            expected_head = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], env=env,
+                                           capture_output=True, check=True, timeout=30).stdout.decode().strip()
+
+            def different_owner_environment(environment=None):
+                return {**clean_environment(environment), "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"}
+
+            report_path = root / "identity receipt.json"
+            with patch.object(runner, "clean_environment", different_owner_environment), \
+                    patch.object(runner, "discover_build_wheels", return_value=[]):
+                report = runner.qualify(source, sys.executable, report_path)
+            self.assertEqual(report.get("source_head"), expected_head, report.get("error"))
+            self.assertEqual(report.get("source_status"), "")
+            reads = [entry for entry in report["commands"] if entry["command"][0] == "git"]
+            self.assertEqual([entry["returncode"] for entry in reads], [0, 0])
+            self.assertEqual(report["status"], "failed")
+            self.assertIn("no cached setuptools wheel", report.get("error", ""))
+            self.assertEqual(json.loads(report_path.read_text(encoding="utf-8")), report)
+            refused = subprocess.run(["git", "-c", f"safe.directory={source.as_posix()}",
+                                      "-C", str(unrelated), "rev-parse", "HEAD"],
+                                     env=different_owner_environment(), capture_output=True, timeout=30)
+            self.assertNotEqual(refused.returncode, 0, "source trust exception must not cover another repository")
+            self.assertIn(b"dubious ownership", refused.stderr)
 
     def test_cleanup_failure_cannot_leave_successful_receipt_or_cli_exit(self):
         runner = self.runner()
