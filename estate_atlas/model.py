@@ -84,21 +84,27 @@ def _absolute(value: str) -> bool:
     return PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute()
 
 
-def load(path: str | Path) -> dict[str, Any]:
-    """Read and parse an atlas file strictly; return the document as a dict."""
+def read_json_file(path: str | Path, *, max_bytes: int | None = None) -> Any:
+    """Read strict UTF-8 JSON once, accepting an optional leading UTF-8 BOM."""
     where = Path(path)
     try:
         raw = where.read_bytes()
     except OSError as exc:
         raise AtlasError(f"cannot read {where}: {exc.strerror or type(exc).__name__}") from None
-    if len(raw) > MAX_ATLAS_BYTES:
-        raise AtlasError(f"{where} is larger than {MAX_ATLAS_BYTES // 1024} KiB")
+    if max_bytes is not None and len(raw) > max_bytes:
+        raise AtlasError(f"{where} is larger than {max_bytes // 1024} KiB")
     try:
         doc = strict_json(raw.decode("utf-8-sig"))
     except UnicodeDecodeError:
         raise AtlasError(f"{where} is not UTF-8") from None
     except AtlasError as exc:
         raise AtlasError(f"{where}: {exc}") from None
+    return doc
+
+
+def load(path: str | Path) -> dict[str, Any]:
+    """Read and parse an atlas file strictly; return the document as a dict."""
+    doc = read_json_file(path, max_bytes=MAX_ATLAS_BYTES)
     if not isinstance(doc, dict):
         raise AtlasError("atlas: the top level must be an object")
     return doc

@@ -12,6 +12,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from . import model
+
 SCHEMA = "estate-atlas@2"
 CHECK_SCHEMA = "estate-atlas-check@2"
 
@@ -50,38 +52,19 @@ class AtlasError(ValueError):
     """Invalid atlas or check input."""
 
 
-def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise AtlasError("duplicate JSON key %r" % (key,))
-        result[key] = value
-    return result
-
-
-def _reject_constant(value: str) -> Any:
-    raise AtlasError("non-finite JSON number %r" % (value,))
-
-
 def strict_json(text: str) -> Any:
     try:
-        return json.loads(
-            text, object_pairs_hook=_no_duplicates, parse_constant=_reject_constant
-        )
-    except json.JSONDecodeError as exc:
-        raise AtlasError("invalid JSON: %s at line %s" % (exc.msg, exc.lineno)) from exc
+        return model.strict_json(text)
+    except model.AtlasError as exc:
+        raise AtlasError(str(exc)) from exc
 
 
 def read_json_file(path: Path) -> Any:
+    """Read strict JSON using the same UTF-8/BOM policy as atlas validation."""
     try:
-        raw = path.read_bytes()
-    except OSError as exc:
-        raise AtlasError("cannot read %s: %s" % (path, exc.strerror or exc)) from exc
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise AtlasError("file is not UTF-8: %s" % (path,)) from exc
-    return strict_json(text)
+        return model.read_json_file(path)
+    except model.AtlasError as exc:
+        raise AtlasError(str(exc)) from exc
 
 
 def _need_id(value: Any, where: str) -> str:
@@ -286,6 +269,12 @@ def _parse_vocabularies(raw: Any, comp_ids: set[str]) -> list[dict[str, Any]]:
 
 
 def parse_atlas(data: Any) -> dict[str, Any]:
+    """Normalise renderer input, including exports; canonical files validate first.
+
+    This is not a replacement for model.validate at a canonical file boundary.
+    Render/explain functions consume this normalised form or a validated public
+    overlay projection, which intentionally need not be a canonical atlas.
+    """
     if not isinstance(data, dict):
         raise AtlasError("atlas must be a JSON object")
     schema = data.get("schema")
