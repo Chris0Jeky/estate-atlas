@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import io
 import json
 import platform
 import sys
@@ -85,6 +86,12 @@ def _traffic_doc(path: str | None) -> dict[str, Any] | None:
     doc = _json_file(path, "--traffic")
     if not isinstance(doc, dict) or doc.get("schema") != "estate-atlas-traffic@1":
         raise UsageError("--traffic is not an estate-atlas-traffic@1 document")
+    if "crosschecks" in doc:
+        cross = doc["crosschecks"]
+        if not isinstance(cross, dict):
+            raise UsageError("--traffic crosschecks must be an object")
+        if "off_status" in cross and not isinstance(cross["off_status"], list):
+            raise UsageError("--traffic crosschecks.off_status must be a list")
     return doc
 
 
@@ -342,25 +349,42 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    # Argparse can echo unknown arguments before an atlas or overlay has been loaded.
+    # Include its accepted option abbreviations and --overlay=FILE syntax in this guard.
+    public_tour = "tour" in argv and any(
+        arg.startswith("--") and "--overlay".startswith(arg.split("=", 1)[0])
+        for arg in argv if arg != "--")
+
+    def report_error(exc: Exception | None = None) -> None:
+        if public_tour:
+            sys.stderr.write("estate-atlas: public tour refused; inspect the inputs privately.\n")
+        else:
+            sys.stderr.write("estate-atlas: %s\n" % (exc,))
+
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
             with contextlib.suppress(Exception):
                 reconfigure(encoding="utf-8")
     try:
-        args = build_parser().parse_args(argv)
+        with contextlib.redirect_stderr(io.StringIO()) if public_tour else contextlib.nullcontext():
+            args = build_parser().parse_args(argv)
     except SystemExit as exc:  # argparse: --help is 0, a usage error is 2
+        if public_tour and exc.code:
+            report_error()
         return exc.code if isinstance(exc.code, int) else INVALID
+    public_tour = args.verb == "tour" and args.overlay is not None
     try:
         return args.run(args)
     except UsageError as exc:
-        sys.stderr.write("estate-atlas: %s\n" % (exc,))
+        report_error(exc)
         return INVALID
     except (ValueError, OSError, ArithmeticError) as exc:  # AtlasError is a ValueError; OverflowError is an ArithmeticError
-        sys.stderr.write("estate-atlas: %s\n" % (exc,))
+        report_error(exc)
         return INVALID
     except ImportError as exc:
-        sys.stderr.write("estate-atlas: this verb is not available yet: %s\n" % (exc,))
+        report_error(UsageError("this verb is not available yet: %s" % (exc,)))
         return INVALID
 
 

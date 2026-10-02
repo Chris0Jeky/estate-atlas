@@ -56,8 +56,8 @@ Evidence refs name a repo. `repositories(doc, overrides, host)` resolves each re
 - then `repos[name].paths[host]`;
 - otherwise the repo is unresolved.
 
-An unresolved repo makes its refs `unresolved`, not missing. `check` reads `origin/<default_branch>` through `git
-show`, and it never fetches. With `--worktree` it reads the checkout's working files instead, so uncommitted
+An unresolved repo makes its refs `unresolved`, not missing. `check` reads `origin/<default_branch>` through
+read-only git commands (`rev-parse`, `ls-tree` and `cat-file`), and it never fetches. With `--worktree` it reads the checkout's working files instead, so uncommitted
 edits count; it does not read `HEAD`.
 
 ## 4. Traffic engine (`traffic.py`)
@@ -124,8 +124,10 @@ Missing or malformed values count as zero or are skipped. A component with no en
 ## 6. Example (`examples/shop`)
 
 A small fictional system, "a little shop": web, api, queue, worker, db and a payments provider.
-- `examples/shop/atlas.json` has its evidence in `examples/shop/src/`, which is in this repository, so `check` runs
-  offline with `--repo shop=.`.
+- `examples/shop/atlas.json` has its evidence in `examples/shop/src/`, which is in this repository. From the
+  repository root, `check examples/shop/atlas.json --repo shop=examples/shop --worktree` proves the local
+  example files offline. Without `--worktree`, the fictional remote does not match this repository and the
+  report is `partial` with unresolved references; exit 0 for that report does not mean the references were proven.
 - Sample `journal.jsonl` and `events.jsonl` let `route` light some flows, leave one silent, and show one pulse
   flow.
 
@@ -155,7 +157,9 @@ JSON file that gives every layer, component, contract and flow public wording an
 - **Traffic.** `apply_overlay_traffic` renames the flow ids of an `estate-atlas-traffic@1` document so the tour's
   "this week" numbers still show. It keeps `generated`, the per-flow counts and the `silent` and `off_status`
   crosschecks, and drops everything else: `unrouted` examples, `rule_gaps`, sources, coverage and any flow the
-  overlay does not name. A non-string `flow` in `off_status` is an `AtlasError` (exit 2).
+  overlay does not name. Invalid `flows` or `crosschecks` containers, non-string `silent` entries,
+  and `off_status` entries without a string `flow` are an `AtlasError` (exit 2); malformed input is never
+  rewritten as an empty snapshot.
 - **Leak check.** `leak_terms(doc, overlay)` returns what the output must not contain. As substrings: the overlay's
   `denylist`, every original title that differs from its public title (and has at least 4 characters, `MIN_TITLE_SUBSTRING`), every original summary, flow trigger and flow
   gap that differs from its public text (only when it is at least 12 characters, `MIN_TEXT_TERM`, so a short common
@@ -174,8 +178,11 @@ JSON file that gives every layer, component, contract and flow public wording an
   title (before any escaping), on the rendered output, on the Markdown with `\|` and HTML entities undone, and on
   every string and key of the parsed JSON output. Each hit is `(term, field)`.
 - **CLI.** `tour atlas.json --md --overlay O.json [--traffic T]` validates the overlay, renders the tour from the
-  overlaid document, runs the leak check on the output and exits 2, naming the terms and printing or writing
-  nothing, if anything leaks; the message names each term and the field it was found in. A `title` in the overlay replaces "the estate" in the heading. `--overlay` does not
+  overlaid document, runs the leak check on the output and exits 2 with a fixed refusal message if anything
+  leaks or an input is invalid. Neither stdout nor stderr echoes private terms, ids, paths or input values;
+  a refused tour leaves an existing output file unchanged. For detailed diagnostics, use the validation
+  and leak-check library APIs privately; their exceptions and findings can contain private input and must
+  not be published. A `title` in the overlay replaces "the estate" in the heading. `--overlay` does not
   combine with `--check`.
 - **Keep the overlay private.** Its keys are the original ids, so the overlay file belongs with the private atlas;
   only its output is published.
