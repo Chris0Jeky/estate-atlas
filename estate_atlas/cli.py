@@ -68,8 +68,7 @@ def _load(path: str) -> dict[str, Any]:
 def _parsed(path: str) -> dict[str, Any]:
     """The atlas as the renderers and explainers want it (validated, then normalised)."""
     from . import render
-    _load(path)
-    return render.parse_atlas(render.read_json_file(Path(path)))
+    return render.parse_atlas(_load(path))
 
 
 def _json_file(path: str, what: str) -> Any:
