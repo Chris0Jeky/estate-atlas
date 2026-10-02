@@ -661,6 +661,37 @@ class RouteRecordTests(unittest.TestCase):
                                "actor": "user:gate", "subject": "order:o1"})
         self.assertEqual(got, ("f1", "declared", None))
 
+    def test_malformed_sources_remain_unrouted_with_a_warm_memo(self):
+        ti, _, _, _, _ = make_index()
+        record = {"producer": "gate", "verb": "merged",
+                  "actor": "client:one", "subject": "service:back"}
+        expected = (None, "unrouted", "unmapped")
+        for source in (["journal"], {"source": "journal"}, [], {}, 3, True, None,
+                       "unknown"):
+            with self.subTest(source=source):
+                record["source"] = source
+                self.assertEqual(T.route(record, rules(), idx(), FLOWS), expected)
+                self.assertEqual(ti.route_record(record), expected)
+                self.assertEqual(ti.route_record(record), expected)
+        record["source"] = "journal"
+        self.assertEqual(ti.route_record(record), ("f1", "declared", None))
+        del record["source"]
+        self.assertEqual(ti.route_record(record), expected)
+        for source in ("events", "links"):
+            with self.subTest(source=source):
+                record.update(source=source, nodes=["client:one", "service:back"])
+                expected = ((None, "ambiguous", "ambiguous-inference")
+                            if source == "events" else ("f1", "inferred", None))
+                self.assertEqual(ti.route_record(record), expected)
+
+    def test_signature_is_hashable_for_malformed_record_fields(self):
+        for source in (["journal"], {"source": "journal"}, [], {}, 3, True, None):
+            with self.subTest(source=source):
+                record = {"source": source, "producer": [], "verb": {},
+                          "actor": [], "subject": {}, "nodes": [[], {}, "client:one"]}
+                key = T.signature(record)
+                self.assertEqual({key: "stored"}[T.signature(record)], "stored")
+
 
 class ParseAtTests(unittest.TestCase):
     def test_unrepresentable_integer_is_invalid_input(self):

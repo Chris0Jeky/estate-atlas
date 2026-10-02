@@ -290,7 +290,8 @@ def signature(record: dict[str, Any]) -> tuple:
     subject = record.get("subject")
     nodes = record.get("nodes") if isinstance(record.get("nodes"), list) else []
     clean = tuple(sorted(n for n in nodes if isinstance(n, str)))
-    return (source, phead, verb if isinstance(verb, str) else None,
+    return (source if isinstance(source, str) else None, phead,
+            verb if isinstance(verb, str) else None,
             actor if isinstance(actor, str) else None,
             subject if isinstance(subject, str) else None, clean)
 
