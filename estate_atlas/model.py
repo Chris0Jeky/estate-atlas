@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -67,10 +68,18 @@ def _reject_constant(value: str) -> Any:
     raise AtlasError(f"non-finite JSON number {value!r}")
 
 
+def _finite_float(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        _reject_constant(value)
+    return number
+
+
 def strict_json(text: str) -> Any:
     """Parse JSON strictly: no duplicate keys, no non-finite numbers."""
     try:
-        return json.loads(text, object_pairs_hook=_no_duplicates, parse_constant=_reject_constant)
+        return json.loads(text, object_pairs_hook=_no_duplicates, parse_constant=_reject_constant,
+                          parse_float=_finite_float)
     except json.JSONDecodeError as exc:
         raise AtlasError(f"invalid JSON: {exc.msg} at line {exc.lineno}") from exc
 

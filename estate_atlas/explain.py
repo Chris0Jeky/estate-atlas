@@ -368,7 +368,8 @@ def tour(atlas: dict[str, Any],
 
 
 def _esc(value: Any) -> str:
-    return str(value).replace("|", "\\|").replace("<", "&lt;")
+    from .render import _markdown_text
+    return _markdown_text(value)
 
 
 def render_tour_md(atlas: dict[str, Any],

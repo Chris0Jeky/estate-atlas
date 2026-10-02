@@ -150,7 +150,7 @@ class LayersBlockTests(unittest.TestCase):
         block = docs.layers_block(parsed())
         self.assertIn("#### Edge", block)
         self.assertIn("#### Core", block)
-        self.assertIn("| Gate<way> & co | live | shop | 3 | \u2013 |", block)
+        self.assertIn("| Gate&lt;way&gt; &amp; co | live | shop | 3 | \u2013 |", block)
         self.assertIn("| Archive\\|cold | planned | shop | 0 | 1 |", block)
 
 
@@ -239,11 +239,14 @@ class WriteTests(unittest.TestCase):
 
     def test_write_rejects_a_bad_atlas(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            atlas_path, doc_path, _ = write_doc(Path(tmp), fixture_atlas())
+            atlas_path, doc_path, svg_path = write_doc(Path(tmp), fixture_atlas())
+            before_doc, before_svg = doc_path.read_bytes(), svg_path.read_bytes()
             atlas_path.write_text('{"schema": "estate-atlas@2", "schema": "x"}',
                                   encoding="utf-8")
             code, _message = docs.write(atlas_path, doc_path, None)
             self.assertEqual(code, 2)
+            self.assertEqual(doc_path.read_bytes(), before_doc)
+            self.assertEqual(svg_path.read_bytes(), before_svg)
 
     def test_write_rejects_a_bad_traffic_document(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

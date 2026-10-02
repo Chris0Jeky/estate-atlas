@@ -207,7 +207,7 @@ def _public_tour(args: argparse.Namespace, atlas: dict[str, Any], traffic: dict[
     if args.md:
         text = explain.render_tour_md(public, public_traffic)
         if "title" in spec:
-            text = "# A tour of " + spec["title"] + text[text.index("\n"):]
+            text = "# A tour of " + explain._esc(spec["title"]) + text[text.index("\n"):]
     else:
         text = _dump(explain.tour(public, public_traffic))
     found = overlay.find_leaks(atlas, spec, public, text, markdown=bool(args.md))
