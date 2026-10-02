@@ -38,11 +38,18 @@ def _err(text: Any) -> str:
 
 
 def parse_at(value: Any) -> float | None:
-    """Epoch seconds from a number or an ISO 8601 string (a trailing `Z` is UTC, a naive time is UTC); else None."""
+    """Epoch seconds from a number or ISO 8601 string; else None.
+
+    A trailing `Z` is UTC and a naive time is UTC. An integer that cannot be
+    represented as a finite float is invalid input and raises ValueError.
+    """
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        out = float(value)
+        try:
+            out = float(value)
+        except OverflowError:
+            raise ValueError("timestamp is outside the supported numeric range") from None
         return out if math.isfinite(out) else None
     if isinstance(value, str) and value.strip():
         text = value.strip()
@@ -283,7 +290,8 @@ def signature(record: dict[str, Any]) -> tuple:
     subject = record.get("subject")
     nodes = record.get("nodes") if isinstance(record.get("nodes"), list) else []
     clean = tuple(sorted(n for n in nodes if isinstance(n, str)))
-    return (source, phead, verb if isinstance(verb, str) else None,
+    return (source if isinstance(source, str) else None, phead,
+            verb if isinstance(verb, str) else None,
             actor if isinstance(actor, str) else None,
             subject if isinstance(subject, str) else None, clean)
 
@@ -903,7 +911,8 @@ def _with_ids(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Copies of the rows with an integer `id` and a numeric `at`.
 
     A row without an integer id gets the next id after the largest one in the file, in file order. An `at` that
-    is not a number or an ISO 8601 time becomes None, and the index then leaves the row out."""
+    is not a number or an ISO 8601 time becomes None, and the index then leaves the row out. An integer outside
+    the supported numeric range raises ValueError rather than dropping the row."""
     top = max((r["id"] for r in rows if _row_id(r) is not None), default=0)
     out: list[dict[str, Any]] = []
     for row in rows:
@@ -948,9 +957,11 @@ def route_files(doc: dict[str, Any], journal: Any = None, events: Any = None, li
         for item in raw:
             if isinstance(item, dict):
                 pairs.append((item.get("source"), item))
+    # Validate numeric range even when an explicit clock bypasses newest-record selection.
+    link_stamps = [t for t in (parse_at(link.get("at")) for _, link in pairs) if t is not None]
     if now is None:
         stamps = [r["at"] for r in jrows + erows if isinstance(r["at"], float)]
-        stamps += [t for t in (parse_at(link.get("at")) for _, link in pairs) if t is not None]
+        stamps += link_stamps
         clock = max(stamps) if stamps else 0.0
     else:
         clock = float(now)
