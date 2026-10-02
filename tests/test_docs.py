@@ -150,7 +150,7 @@ class LayersBlockTests(unittest.TestCase):
         block = docs.layers_block(parsed())
         self.assertIn("#### Edge", block)
         self.assertIn("#### Core", block)
-        self.assertIn("| Gate<way> & co | live | shop | 3 | \u2013 |", block)
+        self.assertIn("| Gate&lt;way&gt; &amp; co | live | shop | 3 | \u2013 |", block)
         self.assertIn("| Archive\\|cold | planned | shop | 0 | 1 |", block)
 
 

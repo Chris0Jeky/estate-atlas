@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .render import (
+    _markdown_text,
     _mmd_id,
     _write,
     order_cards,
@@ -38,8 +39,8 @@ PLACEHOLDER_LINE = "No traffic snapshot yet."
 WRITE_HINT = "rewrite the doc blocks"
 
 GLANCE_IMAGE = "[![The estate at a glance](atlas-glance.svg)](atlas.html)"
-GLANCE_SENTENCE = ("Generated from the atlas: solid parts run today, dashed ones are "
-                   "planned or partial; open the atlas page for evidence and live state.")
+GLANCE_SENTENCE = ("Generated from the atlas: solid parts are declared live, dashed ones are "
+                   "planned or partial; open the atlas page for source evidence.")
 
 
 @dataclass(frozen=True)
@@ -73,8 +74,8 @@ DEFAULT_STYLE = Style()
 
 
 def esc_cell(value: Any) -> str:
-    """Markdown table cell text with pipes escaped."""
-    return str(value).replace("\n", " ").replace("|", "\\|").strip()
+    """Literal Markdown table cell text with pipes escaped."""
+    return _markdown_text(str(value).replace("\n", " ")).strip()
 
 
 def xml_esc(value: Any) -> str:
@@ -142,9 +143,9 @@ def layers_block(atlas: dict[str, Any], *, style: Style = DEFAULT_STYLE) -> str:
     for index, layer in enumerate(atlas["layers"]):
         if index > 0:
             parts.append("")
-        parts.append("#### " + layer["title"])
+        parts.append("#### " + _markdown_text(layer["title"]))
         parts.append("")
-        parts.append(layer["summary"])
+        parts.append(_markdown_text(layer["summary"]))
         parts.append("")
         parts.append("| Part | Status | Home | Evidence | Planned evidence |")
         parts.append("|---|---|---|---|---|")

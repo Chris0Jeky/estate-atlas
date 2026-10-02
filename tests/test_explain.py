@@ -308,8 +308,8 @@ class RenderTests(unittest.TestCase):
         atlas["components"][0]["title"] = "Odd|Pipe <b>"
         atlas["components"][0]["summary"] = "A <tag> with | pipes."
         md = explain_mod.render_tour_md(atlas)
-        self.assertIn("Odd\\|Pipe &lt;b>", md)
-        self.assertIn("A &lt;tag> with \\| pipes.", md)
+        self.assertIn("Odd\\|Pipe &lt;b&gt;", md)
+        self.assertIn("A &lt;tag&gt; with \\| pipes.", md)
         self.assertNotIn("<b>", md)
         self.assertNotIn("<tag>", md)
 

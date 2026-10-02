@@ -6,7 +6,7 @@ estate-atlas keeps a system's architecture as checked data:
 - a checker proves that the evidence still exists.
 
 On top of that, it can:
-- **route real records** (log lines, events, links) onto the flows, so the map shows which wiring is alive;
+- **route records** (log lines, events, links) onto the flows, showing observations separately from declared status;
 - **render** the atlas: an offline HTML page, mermaid, an SVG overview and generated Markdown blocks;
 - **explain** every part in plain English, from facts only.
 
@@ -76,7 +76,9 @@ The routing works as follows:
 3. If its endpoints all map to one component, it is `internal`.
 4. Otherwise it is `unrouted` or `ambiguous`.
 
-Counts are kept in hourly buckets over 168 hours. `verify()` rebuilds from scratch and compares.
+Counts are kept in hourly buckets over 168 hours. `verify()` rebuilds from scratch and compares; its result is
+cached for 60 seconds and describes that comparison, not continuous source monitoring. Declared rules can match
+producer-only events without endpoints. A pulse is an observation, not business volume or health proof.
 
 Rollups: `rollup` refuses to run (returns `skipped: "index not built"`, writes nothing and leaves `last_day` alone)
 while the traffic index is not built or has no flows, so a day is never sealed without rules to route it.
@@ -100,6 +102,10 @@ python -m estate_atlas route atlas.json --journal F.jsonl [--events F.jsonl] [--
 
 `route` takes JSONL record files, prints `estate-atlas-traffic@1`, and exists so anyone can try routing without a
 running service.
+
+File-backed JSON and JSONL use strict UTF-8 (with an optional leading BOM): duplicate keys and non-finite numbers,
+including exponents that overflow a finite float, are invalid. Valid JSON records with unusable timestamps and
+non-object entries in a links list retain the documented skip behavior; these are distinct from JSON errors.
 
 Exit codes: 0 means ok, 1 means drift or stale, 2 means invalid input.
 
@@ -186,6 +192,10 @@ JSON file that gives every layer, component, contract and flow public wording an
   combine with `--check`.
 - **Keep the overlay private.** Its keys are the original ids, so the overlay file belongs with the private atlas;
   only its output is published.
+
+Atlas text in generated Markdown blocks and tours is escaped as literal text, including public tour titles;
+it cannot introduce raw HTML, Markdown links or inline code. Generated HTML and SVG have their own escaping.
+Deterministic output does not itself establish source freshness, privacy coverage or runtime acceptance.
 
 ## 8. What never goes in
 

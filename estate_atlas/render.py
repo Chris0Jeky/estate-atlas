@@ -16,6 +16,12 @@ SCHEMA = "estate-atlas@2"
 CHECK_SCHEMA = "estate-atlas-check@2"
 
 
+def _markdown_text(value: Any) -> str:
+    """Literal atlas text in Markdown: no raw HTML, links, or inline code."""
+    text = html.escape(str(value), quote=False)
+    return re.sub(r"([\\`*_\[\]|])", r"\\\1", text)
+
+
 def is_atlas_schema(value: Any) -> bool:
     """Accept ``estate-atlas@2`` or any namespace ending in ``/atlas@2``."""
     return isinstance(value, str) and (

@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .model import strict_json
+
 SCHEMA = "estate-atlas-traffic@1"
 WINDOW_HOURS = 168
 BUCKET_S = 3600
@@ -888,7 +890,7 @@ def _read_jsonl(path: Any) -> list[dict[str, Any]]:
         if not line.strip():
             continue
         try:
-            row = json.loads(line)
+            row = strict_json(line)
         except ValueError:
             raise ValueError(f"{where}:{number}: not valid JSON") from None
         if not isinstance(row, dict):
@@ -936,7 +938,7 @@ def route_files(doc: dict[str, Any], journal: Any = None, events: Any = None, li
     pairs: list[tuple[Any, dict[str, Any]]] = []
     if links is not None:
         try:
-            raw = json.loads(Path(links).read_text(encoding="utf-8-sig"))
+            raw = strict_json(Path(links).read_text(encoding="utf-8-sig"))
         except OSError as exc:
             raise ValueError(f"cannot read {links}: {exc.strerror or type(exc).__name__}") from None
         except ValueError:

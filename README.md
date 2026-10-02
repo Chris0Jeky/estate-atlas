@@ -4,8 +4,8 @@
 file. estate-atlas then:
 
 - **proves** each claim against your git repositories, so the map can't quietly drift from the code;
-- **lights** each flow with real traffic from your logs and events, so you see which wiring is alive, which is
-  silent, and which records cross no flow at all;
+- **projects** observations from your logs and events onto flows, showing volumes, pulses, silent live flows
+  and records that cross no flow;
 - **draws** it: an offline HTML atlas, mermaid, an SVG overview, and Markdown blocks your docs can embed and CI can
   check;
 - **explains** every part in plain English, from facts only;
