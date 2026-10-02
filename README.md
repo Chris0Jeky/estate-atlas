@@ -13,6 +13,9 @@ file. estate-atlas then:
 
 Standard-library Python. No dependencies. GPL-3.0-only.
 
+Atlas files use strict UTF-8 JSON, with or without a leading UTF-8 BOM. File-based commands validate the
+same document they render or explain; duplicate keys, non-finite numbers and malformed UTF-8 are rejected.
+
 ```
 python -m estate_atlas check examples/shop/atlas.json --repo shop=examples/shop
 python -m estate_atlas route examples/shop/atlas.json --journal examples/shop/journal.jsonl --events examples/shop/events.jsonl

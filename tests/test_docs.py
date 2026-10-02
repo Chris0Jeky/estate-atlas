@@ -19,7 +19,7 @@ def fixture_atlas() -> dict:
     return {
         "schema": "estate-atlas@2",
         "updated": "2026-09-30",
-        "repos": {},
+        "repos": {"shop": {"remote": "example/shop", "default_branch": "main", "paths": {}}},
         "layers": [
             {"id": "edge", "title": "Edge", "summary": "Entry points."},
             {"id": "core", "title": "Core", "summary": "Workers and store."},

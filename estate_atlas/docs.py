@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import model
+
 from .render import (
     _mmd_id,
     _write,
@@ -448,7 +450,10 @@ def _traffic_inner_empty(inner: str, *, style: Style = DEFAULT_STYLE) -> bool:
 
 
 def load_atlas(path: Path) -> dict[str, Any]:
-    return parse_atlas(read_json_file(path))
+    """Validate the canonical atlas file, then normalise the same document."""
+    doc = model.load(path)
+    model.validate(doc)
+    return parse_atlas(doc)
 
 
 def svg_path_for(doc_path: Path) -> Path:
