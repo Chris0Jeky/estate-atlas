@@ -84,6 +84,32 @@ class BoundaryTests(unittest.TestCase):
                 model.strict_json(text)
         self.assertEqual(model.strict_json('{"value":1e3}'), {'value': 1000.0})
 
+    def test_unrepresentable_integer_timestamp_refuses_without_replacing_output(self):
+        env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        good = {"at": 1_790_000_000, "producer": "api.main", "verb": "enqueue",
+                "actor": "service:api", "subject": "service:worker"}
+        with tempfile.TemporaryDirectory(prefix="atlas timestamp ") as temp:
+            root = Path(temp)
+            output = root / "traffic.json"
+            for source in ("journal", "events", "links"):
+                path = root / (source + (".json" if source == "links" else ".jsonl"))
+                for value in (10**1000, -(10**1000)):
+                    rows = [good, dict(good, at=value)]
+                    path.write_text(json.dumps(rows) if source == "links" else
+                                    "\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+                    for now in ([], ["--now", "1790000000"]):
+                        with self.subTest(source=source, negative=value < 0, now=now):
+                            output.write_bytes(b"existing valid artifact\n")
+                            result = subprocess.run(
+                                [sys.executable, "-m", "estate_atlas", "route", str(SHOP),
+                                 "--" + source, str(path), *now, "--out", str(output)],
+                                cwd=ROOT, env=env, capture_output=True)
+                            self.assertEqual(result.returncode, 2, result.stderr)
+                            self.assertEqual(result.stdout, b"")
+                            self.assertEqual(output.read_bytes(), b"existing valid artifact\n")
+                            self.assertEqual(result.stderr.splitlines(),
+                                             [b"estate-atlas: timestamp is outside the supported numeric range"])
+
     def test_public_markdown_title_is_escaped_and_leak_checked(self):
         env = dict(os.environ, PYTHONIOENCODING="utf-8")
         spec = json.loads((ROOT/'tests/fixtures/shop-overlay.json').read_text(encoding='utf-8'))
