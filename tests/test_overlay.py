@@ -663,8 +663,8 @@ class CliTests(TempCase):
         code, out, err = run("tour", ATLAS, "--md", "--overlay", self.write("leaky.json", spec), "--out", str(target))
         self.assertEqual(code, 2)
         self.assertEqual(out, "")
-        self.assertIn("leaks private terms", err)
-        self.assertIn("'Storefront'", err)
+        self.assertIn("public tour refused", err)
+        self.assertNotIn("Storefront", err)
         self.assertFalse(target.exists())
 
     def test_a_leaked_id_in_a_trigger_is_exit_2(self):
@@ -675,16 +675,18 @@ class CliTests(TempCase):
                              "--traffic", traffic)
         self.assertEqual(code, 2)
         self.assertEqual(out, "")
-        self.assertIn("'api'", err)
+        self.assertIn("public tour refused", err)
+        self.assertNotIn("'api'", err)
 
     def test_the_overlays_own_denylist_is_enforced(self):
         spec = fixture()
         spec["components"]["db"]["summary"] = "Keeps every order. This is internal-only."
         code, _, err = run("tour", ATLAS, "--md", "--overlay", self.write("leaky.json", spec))
         self.assertEqual(code, 2)
-        self.assertIn("'internal-only'", err)
+        self.assertIn("public tour refused", err)
+        self.assertNotIn("internal-only", err)
 
-    def test_a_private_term_with_a_pipe_is_exit_2_in_both_formats_and_names_the_field(self):
+    def test_a_private_term_with_a_pipe_is_exit_2_without_disclosing_the_field(self):
         spec = fixture()
         spec["denylist"] = ["Billing | Invoices"]
         spec["components"]["db"]["summary"] = "Keeps every order for Billing | Invoices."
@@ -692,49 +694,53 @@ class CliTests(TempCase):
         for extra in (("--md",), ()):
             code, out, err = run("tour", ATLAS, "--overlay", path, *extra)
             self.assertEqual((code, out), (2, ""), extra)
-            self.assertIn("'Billing | Invoices' in", err)
-            self.assertIn("order-store", err)
+            self.assertIn("public tour refused", err)
+            self.assertNotIn("Billing", err)
+            self.assertNotIn("order-store", err)
 
     def test_a_glued_id_is_exit_2(self):
         spec = fixture()
         spec["components"]["worker"]["summary"] = "Runs as worker-v2 and picks up tasks."
         code, out, err = run("tour", ATLAS, "--md", "--overlay", self.write("glued.json", spec))
         self.assertEqual((code, out), (2, ""))
-        self.assertIn("'worker' in", err)
+        self.assertIn("public tour refused", err)
+        self.assertNotIn("'worker'", err)
 
     def test_a_leak_in_the_overlay_title_is_exit_2(self):
         spec = fixture()
         spec["title"] = "the Storefront"
         code, out, err = run("tour", ATLAS, "--md", "--overlay", self.write("title.json", spec))
         self.assertEqual((code, out), (2, ""))
-        self.assertIn("overlay.title", err)
+        self.assertIn("public tour refused", err)
 
     def test_a_folded_leak_is_exit_2(self):
         spec = fixture()
         spec["components"]["web"]["summary"] = "Serves pages from the \uff33TOREFRONT  via \uff41pi calls."
         code, out, err = run("tour", ATLAS, "--md", "--overlay", self.write("folded.json", spec))
         self.assertEqual((code, out), (2, ""))
-        self.assertIn("'Storefront'", err)
+        self.assertIn("public tour refused", err)
+        self.assertNotIn("Storefront", err)
 
     def test_a_non_string_traffic_flow_is_exit_2_not_a_traceback(self):
         traffic = {"schema": overlay.TRAFFIC_SCHEMA, "flows": {},
                    "crosschecks": {"silent": [], "off_status": [{"flow": {"a": 1}, "status": "planned"}]}}
         code, out, err = self.tour("--traffic", self.write("badtraffic.json", traffic))
         self.assertEqual((code, out), (2, ""))
-        self.assertIn("must be a string", err)
+        self.assertIn("public tour refused", err)
 
     def test_a_bad_overlay_is_exit_2(self):
         spec = fixture()
         del spec["layers"]["edge"]
         code, out, err = run("tour", ATLAS, "--md", "--overlay", self.write("short.json", spec))
         self.assertEqual((code, out), (2, ""))
-        self.assertIn("'edge'", err)
+        self.assertIn("public tour refused", err)
+        self.assertNotIn("'edge'", err)
         self.assertEqual(run("tour", ATLAS, "--md", "--overlay", str(self.tmp / "missing.json"))[0], 2)
 
     def test_overlay_and_check_do_not_combine(self):
         code, _, err = run("tour", ATLAS, "--overlay", str(FIXTURE), "--check", self.write("t.md", "x"))
         self.assertEqual(code, 2)
-        self.assertIn("--check", err)
+        self.assertIn("public tour refused", err)
 
 
 if __name__ == "__main__":

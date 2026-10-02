@@ -237,8 +237,8 @@ def apply_overlay_traffic(traffic_doc: dict[str, Any], overlay: dict[str, Any]) 
 
     Only what the tour reads is kept: ``schema``, ``generated``, the per-flow counts, and the ``silent`` and
     ``off_status`` crosschecks. The ``unrouted`` examples, ``rule_gaps``, sources and coverage are dropped, and so
-    is any flow the overlay does not name (its id would be private). A non-string ``flow`` in ``off_status``
-    raises ``AtlasError``.
+    is any flow the overlay does not name (its id would be private). Malformed containers or crosscheck entries
+    raise ``AtlasError`` instead of being converted into an empty snapshot.
     """
     if not isinstance(traffic_doc, dict) or traffic_doc.get("schema") != TRAFFIC_SCHEMA:
         raise AtlasError(f"traffic: not an {TRAFFIC_SCHEMA} document")
@@ -247,15 +247,21 @@ def apply_overlay_traffic(traffic_doc: dict[str, Any], overlay: dict[str, Any]) 
     out: dict[str, Any] = {"schema": traffic_doc["schema"]}
     if "generated" in traffic_doc:
         out["generated"] = traffic_doc["generated"]
-    src = traffic_doc.get("flows")
-    out["flows"] = {public[fid]: copy.deepcopy(value) for fid, value in sorted(src.items()) if fid in public} \
-        if isinstance(src, dict) else {}
-    cross = traffic_doc.get("crosschecks")
-    cross = cross if isinstance(cross, dict) else {}
-    silent = cross.get("silent")
-    off = cross.get("off_status")
-    for item in off if isinstance(off, list) else []:
-        if isinstance(item, dict) and "flow" in item and not isinstance(item["flow"], str):
+    src = traffic_doc.get("flows", {})
+    if not isinstance(src, dict) or any(not isinstance(value, dict) for value in src.values()):
+        raise AtlasError("traffic: flows must be an object of flow objects")
+    out["flows"] = {public[fid]: copy.deepcopy(value) for fid, value in sorted(src.items()) if fid in public}
+    cross = traffic_doc.get("crosschecks", {})
+    if not isinstance(cross, dict):
+        raise AtlasError("traffic: crosschecks must be an object")
+    silent = cross.get("silent", [])
+    off = cross.get("off_status", [])
+    if not isinstance(silent, list) or any(not isinstance(item, str) for item in silent):
+        raise AtlasError("traffic: crosschecks.silent must be a list of strings")
+    if not isinstance(off, list):
+        raise AtlasError("traffic: crosschecks.off_status must be a list")
+    for item in off:
+        if not isinstance(item, dict) or not isinstance(item.get("flow"), str):
             raise AtlasError("traffic: crosschecks.off_status[].flow must be a string")
     out["crosschecks"] = {
         "silent": sorted(public[f] for f in silent if isinstance(f, str) and f in public)
