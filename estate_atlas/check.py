@@ -10,6 +10,7 @@ adds hosted links on every evidence, vocabulary source and expect reference.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -38,11 +39,23 @@ __all__ = [
 # --------------------------------------------------------------------------- git access (read-only)
 
 _GIT_TIMEOUT_S = 30
+_GIT_LOCAL_ENV = frozenset({
+    "GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_PREFIX",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_INDEX_FILE",
+    "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE", "GIT_REPLACE_REF_BASE", "GIT_NO_REPLACE_OBJECTS",
+    "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+})
 
 
 def _git(path: str | Path, *args: str) -> subprocess.CompletedProcess[bytes]:
-    """Run `git -C <path> ...`, capturing output as bytes."""
-    return subprocess.run(["git", "-C", str(path), *args], capture_output=True, timeout=_GIT_TIMEOUT_S)
+    """Read the selected checkout, without inherited repository-local overrides."""
+    env = {name: value for name, value in os.environ.items()
+           if name.upper() not in _GIT_LOCAL_ENV
+           and not name.upper().startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_", "GIT_TRACE"))}
+    # Git initializes trace2 from owner config before command-line overrides.
+    env.update(GIT_OPTIONAL_LOCKS="0", GIT_TRACE2="0", GIT_TRACE2_EVENT="0", GIT_TRACE2_PERF="0")
+    return subprocess.run(["git", "-C", str(path), *args], env=env,
+                          capture_output=True, timeout=_GIT_TIMEOUT_S)
 
 
 def _parse_remote_id(url: str) -> str | None:
