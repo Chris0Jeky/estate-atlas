@@ -60,6 +60,12 @@ An unresolved repo makes its refs `unresolved`, not missing. `check` reads `orig
 read-only git commands (`rev-parse`, `ls-tree` and `cat-file`), and it never fetches. With `--worktree` it reads the checkout's working files instead, so uncommitted
 edits count; it does not read `HEAD`.
 
+Git reads discover the repository from the selected path. Inherited Git variables that redirect repositories,
+objects, command configuration or tracing are removed, keeping evidence tied to the selected checkout and
+preventing trace writes. Normal repository discovery and global user configuration remain available;
+optional Git locks are disabled for these reads. Trace2 targets are explicitly disabled in the subprocess
+environment because removing inherited trace variables alone would still allow owner-configured trace files.
+
 ## 4. Traffic engine (`traffic.py`)
 
 The traffic engine is a library: the caller injects the readers:
