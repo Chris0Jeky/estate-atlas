@@ -112,6 +112,9 @@ running service.
 File-backed JSON and JSONL use strict UTF-8 (with an optional leading BOM): duplicate keys and non-finite numbers,
 including exponents that overflow a finite float, are invalid. Valid JSON records with unusable timestamps and
 non-object entries in a links list retain the documented skip behavior; these are distinct from JSON errors.
+Integer timestamps outside the supported finite-float range are invalid input: `parse_at` raises `ValueError`
+with `timestamp is outside the supported numeric range`, and file routing rejects the input rather than
+skipping or clamping the record. The CLI exits 2, prints no snapshot, and preserves an existing output file.
 
 Exit codes: 0 means ok, 1 means drift or stale, 2 means invalid input.
 

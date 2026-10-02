@@ -641,6 +641,18 @@ class RouteFilesTests(unittest.TestCase):
         doc = T.route_files(SHOP_ATLAS, journal=rows, now=T0)
         self.assertEqual(doc["coverage"]["records"], 0)
 
+    def test_unrepresentable_integer_rejects_record_files(self):
+        for source in ("journal", "events", "links"):
+            for value in (10**1000, -(10**1000)):
+                rows = [{"at": T0}, {"at": value}]
+                path = self.write(source, [json.dumps(rows)] if source == "links"
+                                  else [json.dumps(row) for row in rows])
+                for now in (None, T0):
+                    with self.subTest(source=source, negative=value < 0, now=now):
+                        with self.assertRaisesRegex(ValueError,
+                                                    "^timestamp is outside the supported numeric range$"):
+                            T.route_files(SHOP_ATLAS, **{source: path}, now=now)
+
 
 class RouteRecordTests(unittest.TestCase):
     def test_route_record_uses_the_index_rules(self):
@@ -682,10 +694,21 @@ class RouteRecordTests(unittest.TestCase):
 
 
 class ParseAtTests(unittest.TestCase):
+    def test_unrepresentable_integer_is_invalid_input(self):
+        for value in (10**1000, -(10**1000), 1 << 1024, -(1 << 1024)):
+            with self.subTest(negative=value < 0, digits=len(str(abs(value)))):
+                with self.assertRaisesRegex(ValueError,
+                                            "^timestamp is outside the supported numeric range$"):
+                    T.parse_at(value)
+
     def test_numbers_and_iso_strings(self):
         self.assertEqual(T.parse_at(5), 5.0)
+        for value in (1 << 1023, -(1 << 1023), 1.25, -1.25):
+            self.assertEqual(T.parse_at(value), float(value))
         self.assertIsNone(T.parse_at(True))
         self.assertIsNone(T.parse_at(float("nan")))
+        self.assertIsNone(T.parse_at(float("inf")))
+        self.assertIsNone(T.parse_at(float("-inf")))
         self.assertEqual(T.parse_at("1970-01-01T00:00:10Z"), 10.0)
         self.assertEqual(T.parse_at("1970-01-01T00:00:10"), 10.0)
         self.assertEqual(T.parse_at("1970-01-01T01:00:10+01:00"), 10.0)
