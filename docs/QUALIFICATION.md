@@ -120,7 +120,7 @@ records raw commands, return codes and output, interpreter and build-tool versio
 a digest of copied source contents, wheel filename/SHA-256, installed import location, both tested entry points and
 the final result. A dirty source run qualifies the copied content digest, not HEAD alone. Temporary environments,
 fixtures and built wheel are removed after the run. Receipts can contain local paths: keep them outside Git and
-inspect them privately.
+inspect them privately. Temporary cleanup failure produces a failed receipt and a nonzero exit.
 
 Repeat on each supported interpreter available to you with `--python <interpreter-path>`. On Windows, `py -0p`
 lists candidates, and `py -3.11 scripts/qualify_wheel.py --report <directory-outside-git>/wheel-311.json` selects the

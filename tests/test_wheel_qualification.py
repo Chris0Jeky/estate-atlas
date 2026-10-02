@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -227,6 +228,96 @@ class WheelQualificationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "outside"):
                 runner.require_outside_git(root / "ignored receipts/report.json")
             runner.require_outside_git(root.parent / "atlas receipt.json")
+
+    def test_cleanup_failure_cannot_leave_successful_receipt_or_cli_exit(self):
+        runner = self.runner()
+        real_temporary_directory = tempfile.TemporaryDirectory
+        with real_temporary_directory(prefix="atlas cleanup proof ") as temp:
+            root = Path(temp)
+            source = root / "source"
+            (source / "examples").mkdir(parents=True)
+            (source / "tests/fixtures").mkdir(parents=True)
+            (source / "tests/fixtures/shop-overlay.json").write_text("{}", encoding="utf-8")
+            (source / "tests/test_consumer_qualification.py").write_text("# fixture", encoding="utf-8")
+            cache = root / "cache"
+            cache.mkdir()
+            with zipfile.ZipFile(cache / "setuptools-80.0.0-py3-none-any.whl", "w") as archive:
+                archive.writestr("setuptools-80.0.0.dist-info/METADATA", "Name: setuptools\nVersion: 80.0.0\n")
+                archive.writestr("setuptools-80.0.0.dist-info/WHEEL", "Wheel-Version: 1.0\nTag: py3-none-any\n")
+
+            def successful_command(command, *, cwd, env, **kwargs):
+                stdout = b""
+                if command[0] == "git":
+                    if command[-2:] == ["rev-parse", "HEAD"]:
+                        stdout = b"a" * 40 + b"\n"
+                elif command[1:3] == ["-m", "venv"]:
+                    Path(command[3]).mkdir()
+                elif command[1:3] == ["-m", "pip"]:
+                    if command[3:5] == ["cache", "dir"]:
+                        stdout = str(cache).encode("utf-8") + b"\n"
+                    elif command[3] == "wheel":
+                        wheels = Path(command[command.index("--wheel-dir") + 1])
+                        (wheels / "estate_atlas-0.1.0-py3-none-any.whl").write_bytes(b"fixture wheel")
+                    else:
+                        self.assertIn(command[3], {"install", "check"})
+                elif "-c" in command:
+                    code = command[command.index("-c") + 1]
+                    if "version_info" in code:
+                        payload = {"version": sys.version, "executable": sys.executable,
+                                   "version_info": list(sys.version_info[:3])}
+                    elif "site_packages" in code:
+                        consumer = Path(command[-1]).resolve()
+                        site = consumer / "lib/site-packages"
+                        payload = {"prefix": str(consumer), "site_packages": str(site),
+                                   "module": str(site / "estate_atlas/__init__.py"), "runtime_requirements": []}
+                    else:
+                        payload = {"pip": "fixture", "setuptools": "80.0.0", "wheel": "fixture"}
+                    stdout = json.dumps(payload).encode("utf-8")
+                elif env.get("ATLAS_QUALIFICATION_RESULT"):
+                    names = sorted(runner.CONSUMER_TEST_NAMES)
+                    Path(env["ATLAS_QUALIFICATION_RESULT"]).write_text(json.dumps({
+                        "test_names": names, "tests_run": len(names), "successful": True,
+                        "failures": 0, "errors": 0, "skipped": 0,
+                    }), encoding="utf-8")
+                    Path(env["ATLAS_QUALIFICATION_COMMAND_LOG"]).write_text(json.dumps({
+                        "command": json.loads(env["ATLAS_QUALIFICATION_COMMAND"]), "returncode": 0,
+                    }) + "\n", encoding="utf-8")
+                else:
+                    self.assertIn("--help", command)
+                return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
+
+            for error_type in (OSError, RuntimeError):
+                with self.subTest(error_type=error_type.__name__):
+                    class CleanupFailure:
+                        def __init__(self, **kwargs):
+                            self.directory = real_temporary_directory(**kwargs)
+
+                        def __enter__(self):
+                            return self.directory.__enter__()
+
+                        def __exit__(self, exc_type, exc_value, traceback):
+                            self.directory.__exit__(exc_type, exc_value, traceback)
+                            if exc_type is None:
+                                raise error_type("fixture cleanup failure")
+
+                    receipt = root / f"{error_type.__name__}-qualify.json"
+                    with patch.object(runner.tempfile, "TemporaryDirectory", CleanupFailure), \
+                            patch.object(runner.subprocess, "run", successful_command):
+                        report = runner.qualify(source, sys.executable, receipt)
+                        with self.subTest(entrypoint="qualify"):
+                            self.assertEqual(report["consumer_entrypoints"], ["module", "console"])
+                            self.assertEqual(report.get("error"), "fixture cleanup failure")
+                            self.assertEqual(report["status"], "failed")
+                            self.assertEqual(json.loads(receipt.read_text(encoding="utf-8")), report)
+                        cli_receipt = root / f"{error_type.__name__}-main.json"
+                        with patch.object(runner.sys, "stdout", io.StringIO()), \
+                                patch.object(runner.sys, "stderr", io.StringIO()):
+                            exit_code = runner.main(["--source", str(source), "--report", str(cli_receipt)])
+                        with self.subTest(entrypoint="main"):
+                            self.assertNotEqual(exit_code, 0)
+                            persisted = json.loads(cli_receipt.read_text(encoding="utf-8"))
+                            self.assertEqual(persisted["status"], "failed")
+                            self.assertEqual(persisted.get("error"), "fixture cleanup failure")
 
 
 if __name__ == "__main__":

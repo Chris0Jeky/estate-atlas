@@ -244,6 +244,7 @@ def qualify(source, python, report_path, wheelhouses=()):
                 report.setdefault("consumer_entrypoints", []).append(name)
             report["status"] = "passed"
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        report["status"] = "failed"
         report["error"] = str(error)
     finally:
         report_path.parent.mkdir(parents=True, exist_ok=True)
