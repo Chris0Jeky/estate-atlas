@@ -3,7 +3,8 @@
 estate-atlas keeps a system's architecture as checked data:
 - the **components**, the **contracts** between them and the **flows** that connect them, in one JSON file;
 - each claim carries **evidence** (a file, and optionally a text anchor) in a git repository;
-- a checker proves that the evidence still exists.
+- a part may also claim an **evidence level** (source, unit, integrated, ... accepted), backed by receipts;
+- a checker proves that the evidence still exists and that every claimed level is backed.
 
 On top of that, it can:
 - **route records** (log lines, events, links) onto the flows, showing observations separately from declared status;
@@ -16,8 +17,8 @@ It is standard-library Python (3.11+), with no dependencies, and is licensed GPL
 
 | Module | Owns | Main API |
 |---|---|---|
-| `estate_atlas/model.py` | loading and validating an atlas | `load(path) -> dict`, `validate(doc) -> None` (raises `AtlasError`), `SCHEMA = "estate-atlas@2"`, `is_atlas_schema(s)` |
-| `estate_atlas/check.py` | evidence against git, vocabularies, expected evidence, traffic-rule overlap | `check(doc, repos) -> report`, `repositories(doc, overrides, host) -> repos`, `patterns_overlap(a, b)`, `rules_overlap(r1, r2)` |
+| `estate_atlas/model.py` | loading and validating an atlas | `load(path) -> dict`, `validate(doc) -> None` (raises `AtlasError`), `SCHEMA = "estate-atlas@3"`, `is_atlas_schema(s)`, `schema_version(s)`, `proof_ladder(doc)`, `proof_entries(doc)`, `receipted_level(block, ladder)` |
+| `estate_atlas/check.py` | evidence against git, vocabularies, expected evidence, evidence levels, traffic-rule overlap | `check(doc, repos, host) -> report`, `repositories(doc, overrides, host) -> repos`, `export(doc, repos, report=None)`, `patterns_overlap(a, b)`, `rules_overlap(r1, r2)` |
 | `estate_atlas/traffic.py` | routing records onto flows: declared rules, then inference; pulse; an incremental index with verify; daily rollups, weekly series, fading/surging flags | `match`, `compile_rules`, `route`, `signature`, `TrafficIndex`, `weekly`, `flags` |
 | `estate_atlas/render.py` | the offline HTML page and mermaid | `render_html(doc, check=None) -> str`, `render_mermaid(doc, view) -> str`, `order_cards(doc)` |
 | `estate_atlas/docs.py` | marked Markdown blocks and the overview SVG | `glance_svg(doc)`, `owners_block`, `layers_block`, `traffic_block(doc, traffic)`, `replace_blocks(text, blocks)`, `write(...)`, `check_docs(...)` |
@@ -26,19 +27,20 @@ It is standard-library Python (3.11+), with no dependencies, and is licensed GPL
 | `estate_atlas/cli.py` | `python -m estate_atlas <verb>` | the verbs `validate`, `check`, `export`, `render`, `docs`, `explain`, `tour` and `route` |
 | `estate_atlas/__main__.py` | the entry point | calls `cli.main()` |
 
-## 2. Format (`estate-atlas@2`)
+## 2. Format (`estate-atlas@3`)
 
-The format is atlas@2:
+The format is atlas@3; atlas@2 is the same format without evidence levels (section 2.1):
 - `repos`: name → `{remote, default_branch, paths: {host: path}}`;
 - `layers`;
 - `components`: `id`, `title`, `layer`, `home`, `status`, `summary`, `surfaces`, `owns`, `evidence`,
   `instances` and `expect`;
 - `contracts`: `producer`, `consumers`, `format`;
 - `flows`: `from`, `to`, `contract`, `trigger`, `status`, `gap`, `evidence`, `expect` and `traffic`;
-- `vocabularies`.
+- `vocabularies`;
+- from @3, an optional `proof_ladder`, and an optional `proof` block on any component, contract or flow.
 
-The loader accepts `estate-atlas@2` and any namespaced `<namespace>/atlas@2`, so an embedding project can keep its
-own schema name.
+The loader accepts `estate-atlas@3` and `estate-atlas@2`, and any namespaced `<namespace>/atlas@3` or
+`<namespace>/atlas@2`, so an embedding project can keep its own schema name.
 
 - **Statuses.** Components and contracts can be live, partial, planned or retired; flows can be live, partial,
   documented, planned or absent. Only a planned item (or a documented or absent flow) may carry `expect`.
@@ -48,6 +50,57 @@ own schema name.
   most one flow.
 - **Events.** An events `subject` matches any one of the event's nodes, so events rules are compared ignoring their
   subject.
+
+### 2.1 Evidence levels (`proof`, from @3)
+
+`evidence` says where a part lives in source. A `proof` block says how far it has been proven, on an ordered
+**ladder** of levels, lowest first. The default ladder is
+`source`, `unit`, `integrated`, `native`, `installed`, `device`, `accepted`; an atlas may declare its own as
+`"proof_ladder": ["...", "..."]` (1-16 unique ids, lowest first), which then replaces the default for every block.
+
+```json
+"proof": {
+  "claim": "integrated",
+  "receipts": [
+    {"id": "api-unit-7", "level": "unit",
+     "revisions": [{"repo": "shop", "commit": "<full 40- or 64-hex commit id>"}],
+     "check": "python -m unittest", "outcome": "passed",
+     "unavailable": "no coverage report", "date": "2026-10-01"}
+  ]
+}
+```
+
+- `claim` is the level the part claims. `receipts` lists what backs it (it may be empty, which proves nothing).
+- A **receipt** records one run of a check: `id` (unique in the block), `level` (on the ladder), `revisions` (1-20
+  `{repo, commit}` pairs: what was checked, as full lowercase commit ids in declared repos), `check` (the command
+  or check name), `outcome` (`passed`, `failed` or `partial`), `unavailable` (what could not be checked, or
+  `nothing`) and an optional `date`. Only a `passed` receipt holds a level.
+- **The rule.** A part may claim a level only when that level and every level below it has a passed receipt, and
+  every receipt's revisions resolve. `check` reports, per block, the `claimed` level, the level its receipts reach
+  (`receipted`, read from the block alone) and the level `proven` (receipts whose revisions resolve in git), with a
+  `status`:
+  - `ok`: proven at least as high as claimed (a higher `proven` is an under-claim, printed but not drift);
+  - `over-claim`: some level up to the claim has no passed receipt (drift, even when no checkout is available);
+  - `unverified`: a receipt revision, at any level, does not resolve in an available checkout (drift);
+  - `unresolved`: the claim is receipted, but a needed repository has no checkout here (partial).
+- **Resolving a revision** is read-only, like every other read: `git cat-file -t <commit>` must say `commit`, and
+  in the default mode `git merge-base --is-ancestor <commit> origin/<default_branch>` must hold, so a receipt
+  pins a commit that reached the default branch. `--worktree` only requires the commit to exist in the checkout's
+  repository. Lazy fetching is disabled for every read (`GIT_NO_LAZY_FETCH=1`), so a partial clone never fetches.
+  A checkout that is not a git repository leaves a revision unresolved.
+- **Rendering.** `check` text adds an `Evidence levels: N/M claims proven.` line and one line per claim whose
+  proven level differs from the claim. `explain` and the tour add one "Evidence:" sentence per component that
+  carries a block, comparing the claim with how far its passed receipts reach (no git is read there). The HTML page
+  gains an Evidence view (claimed, receipts reach, proven when a check report is given, every receipt with its
+  commit links); an atlas without `proof` blocks renders as before. `export` adds a commit `url` to every receipt
+  revision. Ordering is fixed: blocks in document order in reports, by kind and id in the HTML, receipts by
+  ladder position then id.
+- **Migration.** atlas@2 documents stay valid unchanged; to use evidence levels, change `schema` to
+  `estate-atlas@3` (or `<namespace>/atlas@3`). A @2 document that carries `proof` or `proof_ladder` is invalid.
+  The check report is now `estate-atlas-check@3` and the export `estate-atlas-export@3`, for every atlas: they add
+  a `proof` list and the summary counts `proof_claims`, `proof_over_claims`, `proof_unverified` and
+  `proof_unresolved`; nothing else in them changed. A consumer that pinned `@2` should accept `@3`;
+  `render.parse_check` accepts both. `unresolved[].refs` still counts evidence references only.
 
 ## 3. Repos and hosts
 
@@ -145,6 +198,10 @@ A small fictional system, "a little shop": web, api, queue, worker, db and a pay
   report is `partial` with unresolved references; exit 0 for that report does not mean the references were proven.
 - Sample `journal.jsonl` and `events.jsonl` let `route` light some flows, leave one silent, and show one pulse
   flow.
+- Evidence levels: every level of the default ladder is claimed by some part, the storefront carries receipts for
+  all seven, the worker under-claims, and `examples/shop/atlas-over-claim.json` is a one-component atlas that
+  over-claims, which `check` rejects (exit 1). The receipts pin commits of this repository that hold the example,
+  so `--worktree` resolves them; rewriting this repository's history would make them unverified.
 
 ## 7. Public overlay (`overlay.py`)
 
@@ -167,7 +224,9 @@ JSON file that gives every layer, component, contract and flow public wording an
   per kind.
 - **The rewrite.** `apply_overlay` returns a deep copy with public text and public ids, renamed everywhere they are
   referenced, and `home` replaced by the public label. It keeps only what the tour and `explain` read: `repos` is
-  `{}` and `evidence`, `expect`, `surfaces`, `owns`, `instances`, `vocabularies`, flow `traffic` rules and a contract's `format` (the tour never prints it) are gone.
+  `{}` and `evidence`, `expect`, `surfaces`, `owns`, `instances`, `vocabularies`, flow `traffic` rules, `proof`
+  blocks and the `proof_ladder` (receipts name checks, commits and repos), and a contract's `format` (the tour never
+  prints it) are gone.
   The result is deliberately **not** a valid atlas: do not pass it to `model.validate` or `check`.
 - **Traffic.** `apply_overlay_traffic` renames the flow ids of an `estate-atlas-traffic@1` document so the tour's
   "this week" numbers still show. It keeps `generated`, the per-flow counts and the `silent` and `off_status`
