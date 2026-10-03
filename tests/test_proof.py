@@ -294,6 +294,31 @@ class ProofCheckTests(CheckFixture):
                                   or args[:2] == ("rev-parse", "--verify") and "^{commit}" in args[-1]])
                 git(self.alpha, "config", "--unset", key)
 
+    def test_every_partial_clone_spelling_is_detected(self) -> None:
+        config = self.alpha / ".git" / "config"
+        original = config.read_text(encoding="utf-8")
+        self.assertFalse(check.partial_clone(self.alpha))
+        cases = {
+            "bare promisor key": '[remote "origin"]\n\tpromisor\n',
+            "promisor = 2": '[remote "origin"]\n\tpromisor = 2\n',
+            "promisor = -1": '[remote "origin"]\n\tpromisor = -1\n',
+            "promisor = 01": '[remote "origin"]\n\tpromisor = 01\n',
+            "promisor = on": '[remote "origin"]\n\tpromisor = on\n',
+            "unreadable promisor": '[remote "origin"]\n\tpromisor = maybe\n',
+            "filter only, dotted remote": '[remote "a.b"]\n\tpartialclonefilter = blob:none\n',
+            "extension": "[extensions]\n\tpartialClone = origin\n",
+        }
+        for name, extra in cases.items():
+            with self.subTest(name):
+                config.write_text(original + extra, encoding="utf-8")
+                self.assertTrue(check.partial_clone(self.alpha))
+        for name, extra in (("promisor = false", '[remote "origin"]\n\tpromisor = false\n'),
+                            ("promisor = 0", '[remote "origin"]\n\tpromisor = 0\n')):
+            with self.subTest(name):
+                config.write_text(original + extra, encoding="utf-8")
+                self.assertFalse(check.partial_clone(self.alpha))
+        config.write_text(original, encoding="utf-8")
+
     def test_a_tree_or_blob_id_is_not_a_commit(self) -> None:
         tree = subprocess.run(["git", "-C", str(self.alpha), "rev-parse", "HEAD^{tree}"], check=True,
                               capture_output=True, text=True).stdout.strip()

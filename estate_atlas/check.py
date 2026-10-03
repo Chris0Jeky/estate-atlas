@@ -114,18 +114,27 @@ def partial_clone(path: str | Path) -> bool:
     """True when the checkout is a partial clone (it has a promisor remote); read-only.
 
     Git fetches a missing object of a partial clone on demand. GIT_NO_LAZY_FETCH stops that only on Git versions
-    that know it, so `check` does not read a partial clone at all: its repository stays unresolved."""
+    that know it, so `check` does not read a partial clone at all: its repository stays unresolved. Any doubt
+    (an unreadable configuration, a promisor value Git cannot read as a boolean) counts as a partial clone."""
     try:
-        completed = _git(path, "config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$")
+        found = _git(path, "config", "--get-regexp",
+                     r"^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$")
+        if found.returncode not in (0, 1):  # 1: no such key
+            return True
+        keys = [line.partition(" ")[0] for line in found.stdout.decode("utf-8", "replace").splitlines()]
+        # Git makes a promisor remote of extensions.partialClone and of any remote with a partial-clone filter.
+        if any(not key.endswith(".promisor") for key in keys):
+            return True
+        if not keys:
+            return False
+        # Let Git read its own boolean spellings (a bare key, yes, on, 2, -1, 01 ...).
+        booleans = _git(path, "config", "--bool", "--get-regexp", r"^remote\..*\.promisor$")
     except (OSError, subprocess.TimeoutExpired):
-        return False
-    for line in completed.stdout.decode("utf-8", "replace").splitlines():
-        key, _, value = line.partition(" ")
-        if key == "extensions.partialclone" and value.strip():
-            return True
-        if key.endswith(".promisor") and value.strip().lower() in ("true", "yes", "on", "1"):
-            return True
-    return False
+        return True
+    if booleans.returncode != 0:
+        return True
+    return any(line.partition(" ")[2].strip() != "false"
+               for line in booleans.stdout.decode("utf-8", "replace").splitlines())
 
 
 def remote_head(path: str | Path, default_branch: str) -> str | None:
