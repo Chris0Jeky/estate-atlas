@@ -76,6 +76,13 @@ class ConsumerQualificationTests(unittest.TestCase):
         self.git("commit", "-q", "-m", "Add fictional shop sources")
         self.git("remote", "add", "origin", "https://github.com/example/shop.git")
         self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        # The example's receipts pin commits of the estate-atlas repository; this checkout has its own history.
+        commit = self.git("rev-parse", "HEAD").decode().strip()
+        for kind in ("components", "contracts", "flows"):
+            for item in self.doc[kind]:
+                for receipt in item.get("proof", {}).get("receipts", []):
+                    receipt["revisions"] = [{"repo": "shop", "commit": commit}]
+        self.atlas = self.write_json("atlas.json", self.doc)
 
     def git_state(self):
         # Disable optional locks even for the observer: status must not refresh the index.
@@ -105,6 +112,7 @@ class ConsumerQualificationTests(unittest.TestCase):
                 code, report = self.checked(None, *options)
                 self.assertEqual((code, report["status"], report["checked"], report["ok"]),
                                  (0, "ok", 19, 19))
+                self.assertEqual({item["status"] for item in report["proof"]}, {"ok"})
         # Preserve a dirty index and working file too; origin proof reads the saved ref.
         (self.repo / "staged.txt").write_text("fictional draft\n", encoding="utf-8")
         self.git("add", "staged.txt")
