@@ -1,5 +1,5 @@
 {
-  "schema": "estate-atlas@2",
+  "schema": "estate-atlas@3",
   "updated": "2026-10-01",
   "repos": {
     "shop": {
@@ -64,7 +64,138 @@
       ],
       "instances": [
         "service:web"
-      ]
+      ],
+      "proof": {
+        "claim": "accepted",
+        "receipts": [
+          {
+            "id": "web-source-1",
+            "level": "source",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "e39f88508fc57fc171adca9ff9ad15b8cbb1a897"
+              },
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "python -m estate_atlas check examples/shop/atlas.json --repo shop=examples/shop --worktree",
+            "outcome": "passed",
+            "unavailable": "nothing: the files are read from the checkout",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "web-unit-1",
+            "level": "unit",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "e39f88508fc57fc171adca9ff9ad15b8cbb1a897"
+              },
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "python -m unittest shop.tests",
+            "outcome": "passed",
+            "unavailable": "no coverage report is kept for the stubs",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "web-integrated-1",
+            "level": "integrated",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "e39f88508fc57fc171adca9ff9ad15b8cbb1a897"
+              },
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "shop end-to-end suite against a local database",
+            "outcome": "passed",
+            "unavailable": "the payments provider is a test double",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "web-native-1",
+            "level": "native",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "e39f88508fc57fc171adca9ff9ad15b8cbb1a897"
+              },
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "shop start on a clean machine image",
+            "outcome": "passed",
+            "unavailable": "only one operating system was tried",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "web-installed-1",
+            "level": "installed",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "e39f88508fc57fc171adca9ff9ad15b8cbb1a897"
+              },
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "shop installer, then a smoke order",
+            "outcome": "passed",
+            "unavailable": "no upgrade from an older release was tried",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "web-device-1",
+            "level": "device",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "e39f88508fc57fc171adca9ff9ad15b8cbb1a897"
+              },
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "a smoke order from a phone on the shop network",
+            "outcome": "passed",
+            "unavailable": "one phone model only",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "web-accepted-1",
+            "level": "accepted",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "e39f88508fc57fc171adca9ff9ad15b8cbb1a897"
+              },
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "the shop owner placed and refunded an order",
+            "outcome": "passed",
+            "unavailable": "nothing",
+            "date": "2026-10-01"
+          }
+        ]
+      }
     },
     {
       "id": "api",
@@ -99,7 +230,96 @@
       ],
       "instances": [
         "service:api"
-      ]
+      ],
+      "proof": {
+        "claim": "installed",
+        "receipts": [
+          {
+            "id": "api-source-1",
+            "level": "source",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "python -m estate_atlas check examples/shop/atlas.json --repo shop=examples/shop --worktree",
+            "outcome": "passed",
+            "unavailable": "nothing: the files are read from the checkout",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "api-unit-1",
+            "level": "unit",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "python -m unittest shop.tests",
+            "outcome": "passed",
+            "unavailable": "no coverage report is kept for the stubs",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "api-integrated-1",
+            "level": "integrated",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "shop end-to-end suite against a local database",
+            "outcome": "passed",
+            "unavailable": "the payments provider is a test double",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "api-native-1",
+            "level": "native",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "shop start on a clean machine image",
+            "outcome": "passed",
+            "unavailable": "only one operating system was tried",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "api-installed-1",
+            "level": "installed",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "shop installer, then a smoke order",
+            "outcome": "passed",
+            "unavailable": "no upgrade from an older release was tried",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "api-device-1",
+            "level": "device",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "a smoke order from a phone on the shop network",
+            "outcome": "failed",
+            "unavailable": "one phone model only",
+            "date": "2026-10-01"
+          }
+        ]
+      }
     },
     {
       "id": "queue",
@@ -133,7 +353,54 @@
       ],
       "instances": [
         "service:queue"
-      ]
+      ],
+      "proof": {
+        "claim": "integrated",
+        "receipts": [
+          {
+            "id": "queue-source-1",
+            "level": "source",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "python -m estate_atlas check examples/shop/atlas.json --repo shop=examples/shop --worktree",
+            "outcome": "passed",
+            "unavailable": "nothing: the files are read from the checkout",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "queue-unit-1",
+            "level": "unit",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "python -m unittest shop.tests",
+            "outcome": "passed",
+            "unavailable": "no coverage report is kept for the stubs",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "queue-integrated-1",
+            "level": "integrated",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "shop end-to-end suite against a local database",
+            "outcome": "passed",
+            "unavailable": "the payments provider is a test double",
+            "date": "2026-10-01"
+          }
+        ]
+      }
     },
     {
       "id": "worker",
@@ -155,7 +422,54 @@
       ],
       "instances": [
         "service:worker"
-      ]
+      ],
+      "proof": {
+        "claim": "unit",
+        "receipts": [
+          {
+            "id": "worker-source-1",
+            "level": "source",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "python -m estate_atlas check examples/shop/atlas.json --repo shop=examples/shop --worktree",
+            "outcome": "passed",
+            "unavailable": "nothing: the files are read from the checkout",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "worker-unit-1",
+            "level": "unit",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "python -m unittest shop.tests",
+            "outcome": "passed",
+            "unavailable": "no coverage report is kept for the stubs",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "worker-integrated-1",
+            "level": "integrated",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "shop end-to-end suite against a local database",
+            "outcome": "passed",
+            "unavailable": "the payments provider is a test double",
+            "date": "2026-10-01"
+          }
+        ]
+      }
     },
     {
       "id": "db",
@@ -189,7 +503,26 @@
       ],
       "instances": [
         "service:db"
-      ]
+      ],
+      "proof": {
+        "claim": "source",
+        "receipts": [
+          {
+            "id": "db-source-1",
+            "level": "source",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "e39f88508fc57fc171adca9ff9ad15b8cbb1a897"
+              }
+            ],
+            "check": "python -m estate_atlas check examples/shop/atlas.json --repo shop=examples/shop --worktree",
+            "outcome": "passed",
+            "unavailable": "nothing: the files are read from the checkout",
+            "date": "2026-10-01"
+          }
+        ]
+      }
     },
     {
       "id": "payments",
@@ -243,7 +576,54 @@
           "path": "src/jobs.py",
           "anchor": "JOB_MESSAGE_FIELDS"
         }
-      ]
+      ],
+      "proof": {
+        "claim": "integrated",
+        "receipts": [
+          {
+            "id": "job-message-source-1",
+            "level": "source",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "python -m estate_atlas check examples/shop/atlas.json --repo shop=examples/shop --worktree",
+            "outcome": "passed",
+            "unavailable": "nothing: the files are read from the checkout",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "job-message-unit-1",
+            "level": "unit",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "python -m unittest shop.tests",
+            "outcome": "passed",
+            "unavailable": "no coverage report is kept for the stubs",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "job-message-integrated-1",
+            "level": "integrated",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "shop end-to-end suite against a local database",
+            "outcome": "passed",
+            "unavailable": "the payments provider is a test double",
+            "date": "2026-10-01"
+          }
+        ]
+      }
     },
     {
       "id": "orders-schema",
@@ -291,7 +671,96 @@
           "path": "src/web.py",
           "anchor": "def forward_request"
         }
-      ]
+      ],
+      "proof": {
+        "claim": "device",
+        "receipts": [
+          {
+            "id": "web-to-api-source-1",
+            "level": "source",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "python -m estate_atlas check examples/shop/atlas.json --repo shop=examples/shop --worktree",
+            "outcome": "passed",
+            "unavailable": "nothing: the files are read from the checkout",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "web-to-api-unit-1",
+            "level": "unit",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "python -m unittest shop.tests",
+            "outcome": "passed",
+            "unavailable": "no coverage report is kept for the stubs",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "web-to-api-integrated-1",
+            "level": "integrated",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "shop end-to-end suite against a local database",
+            "outcome": "passed",
+            "unavailable": "the payments provider is a test double",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "web-to-api-native-1",
+            "level": "native",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "shop start on a clean machine image",
+            "outcome": "passed",
+            "unavailable": "only one operating system was tried",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "web-to-api-installed-1",
+            "level": "installed",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "shop installer, then a smoke order",
+            "outcome": "passed",
+            "unavailable": "no upgrade from an older release was tried",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "web-to-api-device-1",
+            "level": "device",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "a smoke order from a phone on the shop network",
+            "outcome": "passed",
+            "unavailable": "one phone model only",
+            "date": "2026-10-01"
+          }
+        ]
+      }
     },
     {
       "id": "api-to-queue",
@@ -313,7 +782,68 @@
           "producer": "api",
           "verb": "enqueue"
         }
-      ]
+      ],
+      "proof": {
+        "claim": "native",
+        "receipts": [
+          {
+            "id": "api-to-queue-source-1",
+            "level": "source",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "python -m estate_atlas check examples/shop/atlas.json --repo shop=examples/shop --worktree",
+            "outcome": "passed",
+            "unavailable": "nothing: the files are read from the checkout",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "api-to-queue-unit-1",
+            "level": "unit",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "python -m unittest shop.tests",
+            "outcome": "passed",
+            "unavailable": "no coverage report is kept for the stubs",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "api-to-queue-integrated-1",
+            "level": "integrated",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "shop end-to-end suite against a local database",
+            "outcome": "passed",
+            "unavailable": "the payments provider is a test double",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "api-to-queue-native-1",
+            "level": "native",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "shop start on a clean machine image",
+            "outcome": "passed",
+            "unavailable": "only one operating system was tried",
+            "date": "2026-10-01"
+          }
+        ]
+      }
     },
     {
       "id": "queue-to-worker",

@@ -22,3 +22,7 @@ python -m estate_atlas explain examples/shop/atlas.json worker
   crossings are inferred from the components' instances.
 - **explain** describes one component in plain words; add `--traffic` with the saved output of `route` to include
   volumes.
+- **Evidence levels.** Each part's `proof` block claims a level (`source` up to `accepted`) with receipts. With
+  `--worktree`, check proves all eight claims and prints the worker's under-claim (it claims `unit`; its receipts
+  reach `integrated`). `atlas-over-claim.json` claims `installed` with receipts only up to `integrated`, so
+  `python -m estate_atlas check examples/shop/atlas-over-claim.json --repo shop=examples/shop` exits 1.
