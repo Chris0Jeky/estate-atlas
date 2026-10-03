@@ -27,4 +27,14 @@ Design: [docs/DESIGN.md](docs/DESIGN.md).
 
 Consumer proof and its limits: [docs/QUALIFICATION.md](docs/QUALIFICATION.md).
 
+## Public check
+
+Before publishing, run `python scripts/check_public.py` (every tracked file and file name) and
+`python scripts/check_public.py --history` (`git log -p --all` text, commit messages, author lines and ref names).
+It is read-only against git and exits 1 on any hit, printing `path:line: category` with at most a masked excerpt.
+The committed patterns are generic: absolute home-directory paths, default Windows host names, e-mail addresses
+(examples and no-reply forms excepted) and `.ts.net` hosts. Terms specific to your own estate live one per line in
+the gitignored `.public-scan.local` (or the file given with `--terms`); they are matched as whole words, reported
+only by their position in that file, and never committed. History hits are reported, not repaired.
+
 > Status: pre-release.
