@@ -193,8 +193,9 @@ def apply_overlay(doc: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any
     """A deep copy of ``doc`` with public text and public ids, and nothing a public tour must not carry.
 
     Call ``validate_overlay`` first. The result keeps only what the tour and ``explain`` read: ``repos`` is empty;
-    ``evidence``, ``expect``, ``surfaces``, ``owns``, ``instances``, ``vocabularies`` and flow ``traffic`` rules are
-    gone; ``home`` is the public label and a contract's ``format`` is dropped. It does not pass ``model.validate``.
+    ``evidence``, ``expect``, ``surfaces``, ``owns``, ``instances``, ``vocabularies``, flow ``traffic`` rules, ``proof``
+    blocks and the ``proof_ladder`` are gone; ``home`` is the public label and a contract's ``format`` is dropped. It
+    does not pass ``model.validate``.
     """
     doc = copy.deepcopy(doc)
     layers, comps, contracts, flows = (overlay[k] for k in ("layers", "components", "contracts", "flows"))
