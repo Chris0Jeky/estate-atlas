@@ -59,7 +59,7 @@ HOME_PATTERNS = (
     re.compile(r"(?<![\w.:/\\~-])/home/" + UNIX_ACCOUNT),
     re.compile(r"(?<![\w.:/\\~-])/Users/" + UNIX_ACCOUNT),
 )
-HOST_PATTERN = re.compile(r"(?<![A-Za-z0-9])(?:DESKTOP|LAPTOP)-([A-Z0-9]{7})(?![A-Za-z0-9])", re.IGNORECASE)
+HOST_PATTERN = re.compile(r"(?<![A-Za-z0-9])(?:DESKTOP|LAPTOP)-[A-Z0-9]{7}(?![A-Za-z0-9])", re.IGNORECASE)
 EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})")
 TAILNET_PATTERN = re.compile(r"(?<![A-Za-z0-9-])[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.ts\.net(?![A-Za-z0-9-])",
                              re.IGNORECASE)
@@ -82,10 +82,8 @@ def generic_hits(text: str) -> list[tuple[str, str]]:
                 hits.append(("home-path", mask(match.group(0))))
                 break
     for match in HOST_PATTERN.finditer(text):
-        suffix = match.group(1)
-        if any(c.isdigit() for c in suffix) or suffix.isupper():  # an all-letter lower-case word is prose
-            hits.append(("windows-host", mask(match.group(0))))
-            break
+        hits.append(("windows-host", mask(match.group(0))))
+        break
     for match in EMAIL_PATTERN.finditer(text):
         local, domain = match.group(0).split("@", 1)[0], match.group(1).lower()
         if text[:match.start()].endswith("://"):
@@ -189,10 +187,10 @@ def findings(text: str, terms: Terms) -> list[str]:
 
 
 def shown(name: str, terms: Terms) -> str:
-    """``name`` as it may be printed: a name (path or ref) that itself hits is masked, never echoed."""
+    """``name`` as it may be printed: a name (path or ref) that itself hits becomes a hash label, no source text."""
     if not findings(name, terms):
         return name
-    return mask(name) + "#" + hashlib.sha1(name.encode("utf-8", "replace")).hexdigest()[:6]
+    return "<masked:#" + hashlib.sha1(name.encode("utf-8", "replace")).hexdigest()[:6] + ">"
 
 
 def scan_text(text: str, terms: Terms):
@@ -280,6 +278,12 @@ def history_records(log_text: str, terms: Terms):
                     yield sha, path, old_line, finding
                 old_line += 1
                 continue
+            if line[:1] == " " and old_left > 0 and new_left > 0:
+                old_left -= 1  # context line (git can emit them despite -U0)
+                new_left -= 1
+                old_line += 1
+                new_line += 1
+                continue
             old_left = new_left = 0  # malformed or short hunk: treat the line as a header again
         if line.startswith("\x01"):
             sha, state, header_line = line[1:].strip(), "header", 0
@@ -316,7 +320,8 @@ def history_records(log_text: str, terms: Terms):
 
 def scan_history(repo: Path, terms: Terms) -> int:
     refs = git(repo, "for-each-ref", "--format=%(refname)").decode("utf-8", "replace").splitlines()
-    log = git(repo, "log", "-p", "--all", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames",
+    log = git(repo, "log", "-p", "--all", "-U0", "--no-color", "--no-ext-diff", "--no-textconv",
+              "--src-prefix=a/", "--dst-prefix=b/", "--inter-hunk-context=0", "--no-renames",
               "--format=%x01%H%n%an <%ae>%n%cn <%ce>%n%B%x02").decode("utf-8", "replace")
     hits = 0
     for ref in refs:

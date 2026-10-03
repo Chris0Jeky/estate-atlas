@@ -324,7 +324,7 @@ class ReviewRoundTests(unittest.TestCase):
         result = repo.scan()
         self.assertEqual(result.returncode, 1)
         self.assertNoTerm(result)
-        self.assertIn("ac***", result.stdout)
+        self.assertIn("<masked:#", result.stdout)
         self.assertIn("private-term #1", result.stdout)
 
     def test_history_never_prints_a_private_path_or_ref_name(self):
@@ -393,6 +393,9 @@ class ReviewRoundTests(unittest.TestCase):
             "lower windows": "c:" + "\\users\\alice\\x",
             "lower host": "desktop" + "-ab12cd3",
             "upper tailnet": "node.TS" + ".NET",
+            "lower letters-only host": "desktop" + "-abcdefg",
+            "mixed-case host": "DESKTOP" + "-AbCdEfG",
+            "word-like host suffix": "desktop" + "-support",
             "unicode home": "/ho" + "me/élodie/work",
             "account with a space": "C:" + "\\Users\\user name\\docs",
             "windows unicode": "C:" + "\\Users\\élodie\\docs",
@@ -402,7 +405,7 @@ class ReviewRoundTests(unittest.TestCase):
                 repo = self.repo_with({"n.md": text + "\n"}, terms=None)
                 result = repo.scan()
                 self.assertEqual(result.returncode, 1, result.stdout)
-        for text in ("C:" + "\\Users\\user\\docs", "DESKTOP" + "-publishing", "desktop" + "-support"):
+        for text in ("C:" + "\\Users\\user\\docs", "DESKTOP" + "-publishing"):
             with self.subTest(clean=text):
                 repo = self.repo_with({"n.md": text + "\n"}, terms=None)
                 self.assertEqual(repo.scan().returncode, 0)
@@ -423,7 +426,7 @@ class ReviewRoundTests(unittest.TestCase):
             code = module.main(["--repo", str(repo.path)])
         self.assertEqual(code, 2)
         self.assertNotIn("acme-internal", (out.getvalue() + err.getvalue()).lower())
-        self.assertIn("ac***", err.getvalue())
+        self.assertIn("<masked:#", err.getvalue())
 
     def test_a_tracked_file_deleted_from_disk_is_skipped_not_fatal(self):
         repo = self.repo_with({"a.txt": "x\n", "b.txt": "y\n"}, terms=None)
@@ -448,6 +451,74 @@ class ReviewRoundTests(unittest.TestCase):
     def test_a_term_matches_itself_literally(self):
         repo = self.repo_with({"d.md": "see widget--workshop\n"}, terms="widget--workshop\n")
         self.assertEqual(repo.scan().returncode, 1)
+
+    def test_inter_hunk_context_config_cannot_hide_a_later_change(self):
+        repo = Repo(self)
+        git(repo.path, "config", "diff.interHunkContext", "3")
+        repo.write("a.txt", "".join(f"line {n}\n" for n in range(1, 11)))
+        repo.commit("base")
+        lines = [f"line {n}\n" for n in range(1, 11)]
+        lines[1] = "changed two\n"
+        lines[3] = "see acme-internal\n"
+        repo.write("a.txt", "".join(lines))
+        repo.commit("two nearby changes")
+        sha = head(repo)
+        repo.write("a.txt", "".join(f"line {n}\n" for n in range(1, 11)))
+        repo.commit("revert")
+        repo.write(".public-scan.local", "acme-internal\n")
+        self.assertEqual(repo.scan().returncode, 0)
+        result = repo.scan("--history")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, sha[:12] + r" a\.txt:\d+: private-term #1")
+
+    def test_a_context_line_inside_a_hunk_is_consumed_not_a_reset(self):
+        module = load_script()
+        log = ("\x01" + "a" * 40 + "\nDev <dev@example.com>\nDev <dev@example.com>\nmsg\n\x02\n"
+               "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n-old one\n+new one\n"
+               " context\n-old three\n+see acme-internal\n")
+        found = list(module.history_records(log, module.Terms(["acme-internal"])))
+        self.assertEqual([(path, number, finding) for _, path, number, finding in found],
+                         [("f.txt", 3, "private-term #1")])
+
+    def test_a_masked_label_keeps_no_source_characters(self):
+        repo = self.repo_with({"al.txt": "plain\n"}, terms="al\n")
+        git(repo.path, "branch", "al")
+        for result in (repo.scan(), repo.scan("--history")):
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("<masked:#", result.stdout)
+            for leftover in ("al***", "al.txt", "heads/al", "refs/"):
+                self.assertNotIn(leftover, result.stdout + result.stderr)
+
+    def test_history_file_names_survive_a_noprefix_or_custom_prefix_config(self):
+        for key, value in (("diff.noprefix", "true"), ("diff.srcPrefix", "x/"), ("diff.mnemonicPrefix", "true")):
+            with self.subTest(key):
+                repo = Repo(self)
+                git(repo.path, "config", key, value)
+                git(repo.path, "config", "diff.dstPrefix", "y/")
+                repo.write("keep.txt", "x\n")
+                repo.write("acme-internal-empty.txt", "")
+                repo.commit("add")
+                git(repo.path, "rm", "-q", "acme-internal-empty.txt")
+                repo.commit("remove")
+                repo.write(".public-scan.local", "acme-internal\n")
+                self.assertEqual(repo.scan().returncode, 0)
+                result = repo.scan("--history")
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("(file name)", result.stdout)
+
+    def test_history_pins_the_diff_prefixes_and_inter_hunk_context(self):
+        module = load_script()
+        calls = []
+
+        def fake(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+        with patch.object(module.subprocess, "run", fake):
+            module.scan_history(ROOT, module.Terms([]))
+        log = next(argv for argv in calls if "log" in argv)
+        for flag in ("--src-prefix=a/", "--dst-prefix=b/", "--inter-hunk-context=0"):
+            self.assertIn(flag, log)
 
     def test_very_short_lines_are_scanned(self):
         repo = self.repo_with({"d.md": "ok\nz\n"}, terms="z\n")
