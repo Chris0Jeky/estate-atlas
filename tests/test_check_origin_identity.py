@@ -17,6 +17,9 @@ class OriginIdentityTests(CheckFixture):
             "../Owner/extra.git",
             "https://github.com/ignored/Owner/extra.git",
             "https://mirror.invalid/github.com/Owner/extra.git",
+            "https://github.com/Owner/extra.git?",
+            "https://github.com/Owner/extra.git#",
+            "ssh://git@github.com/Owner/extra.git?",
         ]
         for origin in origins:
             with self.subTest(origin=origin):

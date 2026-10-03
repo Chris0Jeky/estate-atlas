@@ -63,7 +63,8 @@ def _git(path: str | Path, *args: str) -> subprocess.CompletedProcess[bytes]:
 def _parse_remote_id(url: str) -> str | None:
     """Resolve supported GitHub origins, never just a matching owner/name suffix."""
     text = url.strip()
-    if any(ord(char) < 33 or ord(char) == 127 for char in text) or "\\" in text:
+    # An empty query or fragment parses as "" but is still a query/fragment URL: refuse the delimiters.
+    if any(ord(char) < 33 or ord(char) == 127 for char in text) or "\\" in text or "?" in text or "#" in text:
         return None
     scp = re.fullmatch(r"git@github\.com:(.+)", text, re.IGNORECASE)
     if scp:
