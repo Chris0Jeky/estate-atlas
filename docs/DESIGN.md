@@ -101,11 +101,11 @@ writing receipts.
     or (in the default mode) one that is not on its default branch (drift, exit 1);
   - `unresolved`: the claim is receipted, but a needed repository has no usable checkout here, so nothing could be
     resolved (partial, exit 0, like unresolved evidence).
-- **Resolving a revision** is read-only, like every other read: `git cat-file -t <commit>` must say `commit`, and
-  in the default mode `git merge-base --is-ancestor <commit> origin/<default_branch>` must hold, so a receipt
-  pins a commit that reached the default branch. `--worktree` only requires the commit to exist in the checkout's
-  repository. Lazy fetching is disabled for every read (`GIT_NO_LAZY_FETCH=1`), so a partial clone never fetches.
-  A checkout that is not a git repository leaves a revision unresolved.
+- **Resolving a revision** is read-only, like every other read: `git rev-parse --verify <commit>^{commit}` must
+  return exactly the receipt's id (Git would otherwise accept a SHA-1 id padded to 64 digits, or a ref named like
+  an id), and in the default mode `git merge-base --is-ancestor <commit> origin/<default_branch>` must hold, so a
+  receipt pins a commit that reached the default branch. `--worktree` only requires the commit to exist in the
+  checkout's repository. A checkout that is not a git repository leaves a revision unresolved.
 - **Rendering.** `check` text adds an `Evidence levels: N/M claims proven.` line and one line per claim whose
   proven level differs from the claim. `explain` and the tour add one "Evidence:" sentence per component that
   carries a block, comparing the claim with how far its passed receipts reach (no git is read there). The HTML page
@@ -136,6 +136,9 @@ objects, command configuration or tracing are removed, keeping evidence tied to 
 preventing trace writes. Normal repository discovery and global user configuration remain available;
 optional Git locks are disabled for these reads. Trace2 targets are explicitly disabled in the subprocess
 environment because removing inherited trace variables alone would still allow owner-configured trace files.
+A partial clone (a checkout with `extensions.partialClone` or a promisor remote) fetches missing objects on
+demand, so `check` does not read one: its repository is unresolved. Every read also sets `GIT_NO_LAZY_FETCH=1`,
+which Git versions that know it honour.
 
 ## 4. Traffic engine (`traffic.py`)
 
