@@ -117,6 +117,25 @@ class ProofValidationTests(unittest.TestCase):
         doc["components"][0]["proof"]["claim"] = "unit"
         self.rejects(doc, "proof.claim")
 
+    def test_a_revision_url_only_comes_from_an_export(self) -> None:
+        doc = self.doc({"claim": "source", "receipts": [receipt("source", "a" * 40)]})
+        rev = doc["components"][0]["proof"]["receipts"][0]["revisions"][0]
+        rev["url"] = "https://github.com/Owner/alpha/commit/" + "a" * 40
+        with self.assertRaises(model.AtlasError):
+            model.validate(doc)
+        render.parse_atlas(doc)  # the renderer reads exports
+        rev["url"] = "https://elsewhere.example/commit/" + "a" * 40
+        with self.assertRaises(render.AtlasError):
+            render.parse_atlas(doc)
+
+    def test_schema_2_refuses_proof_on_every_kind(self) -> None:
+        for kind, index in (("contracts", 0), ("flows", 1)):
+            with self.subTest(kind=kind):
+                doc = minimal()
+                doc["schema"] = "estate-atlas@2"
+                doc[kind][index]["proof"] = {"claim": "source", "receipts": []}
+                self.rejects(doc, f"atlas.{kind}.")
+
     def test_proof_needs_schema_3_and_old_atlases_stay_valid(self) -> None:
         old = minimal()
         old["schema"] = "estate-atlas@2"
@@ -203,6 +222,31 @@ class ProofCheckTests(CheckFixture):
         self.assertEqual(report["status"], "drift")
         self.assertIn("receipt r-unit: alpha@000000000000: commit is not in the repository", check._summary(report))
 
+    def test_a_missing_revision_outranks_an_over_claim(self) -> None:
+        receipts = [receipt("source", "0" * 40)]
+        item = self.only(self.run_check(self.claim({"claim": "integrated", "receipts": receipts})))
+        self.assertEqual(item["status"], "unverified")
+
+    def test_an_under_claim_is_printed_but_ok(self) -> None:
+        report = self.run_check(self.claim({"claim": "source", "receipts": upto("unit", self.commit)}))
+        self.assertEqual(report["status"], "ok")
+        self.assertIn("- proof under-claim: components.tool: claimed source, proven unit", check._summary(report))
+        self.assertIn("Evidence levels: 1/1 claims proven.", check._summary(report))
+
+    def test_export_links_every_revision_on_every_kind(self) -> None:
+        both = receipt("source", self.commit)
+        both["revisions"].append({"repo": "extra", "commit": head(self.extra)})
+        doc = self.claim({"claim": "source", "receipts": [both]})
+        doc["contracts"][0]["proof"] = {"claim": "source", "receipts": [receipt("source", self.commit)]}
+        doc["flows"][1]["proof"] = {"claim": "source", "receipts": [receipt("source", self.commit)]}
+        exported = check.export(doc, check.repositories(doc, {}, HOST))
+        urls = [rev["url"] for _, block in model.proof_entries(exported)
+                for r in block["receipts"] for rev in r["revisions"]]
+        self.assertEqual(urls, [f"https://github.com/Owner/alpha/commit/{self.commit}",
+                                f"https://github.com/Owner/extra/commit/{head(self.extra)}",
+                                f"https://github.com/Owner/alpha/commit/{self.commit}",
+                                f"https://github.com/Owner/alpha/commit/{self.commit}"])
+
     def test_a_commit_off_the_default_branch_does_not_resolve_at_origin(self) -> None:
         (self.alpha / "local.txt").write_text("local\n", encoding="utf-8")
         git(self.alpha, "add", "-A")
@@ -215,6 +259,40 @@ class ProofCheckTests(CheckFixture):
         model.validate(doc)
         in_tree = check.check(doc, check.repositories(doc, {}, HOST, worktree=True), HOST)
         self.assertEqual(self.only(in_tree)["status"], "ok")
+
+    def test_a_padded_or_lookalike_id_does_not_resolve_to_another_commit(self) -> None:
+        # In a SHA-1 repository Git resolves a 64-digit string that starts with a real id to that commit.
+        padded = self.commit + "0" * 24
+        report = self.run_check(self.claim({"claim": "source", "receipts": [receipt("source", padded)]}))
+        self.assertEqual((self.only(report)["status"], report["status"]), ("unverified", "drift"))
+        # A ref whose name is a full hex id points somewhere else: only the object with that id counts.
+        other = "1" * 40
+        git(self.alpha, "update-ref", f"refs/heads/{other}", "HEAD")
+        report = self.run_check(self.claim({"claim": "source", "receipts": [receipt("source", other)]}))
+        self.assertEqual(self.only(report)["status"], "unverified")
+
+    def test_a_partial_clone_is_never_read(self) -> None:
+        for key, value in (("extensions.partialClone", "origin"), ("remote.origin.promisor", "true")):
+            with self.subTest(key=key):
+                git(self.alpha, "config", key, value)
+                calls: list[tuple[str, ...]] = []
+                real = check._git
+
+                def spy(path, *args):
+                    if Path(path) == self.alpha:
+                        calls.append(args)
+                    return real(path, *args)
+
+                doc = self.claim({"claim": "source", "receipts": [receipt("source", self.commit)]})
+                with patch.object(check, "_git", side_effect=spy):
+                    report = self.run_check(doc)
+                    in_tree = check.check(doc, check.repositories(doc, {}, HOST, worktree=True), HOST)
+                self.assertEqual(report["status"], "partial")
+                self.assertIn("partial clone", report["unresolved"][0]["why"])
+                self.assertEqual(self.only(in_tree)["status"], "unresolved")
+                self.assertFalse([args for args in calls if args[0] in ("cat-file", "ls-tree", "merge-base")
+                                  or args[:2] == ("rev-parse", "--verify") and "^{commit}" in args[-1]])
+                git(self.alpha, "config", "--unset", key)
 
     def test_a_tree_or_blob_id_is_not_a_commit(self) -> None:
         tree = subprocess.run(["git", "-C", str(self.alpha), "rev-parse", "HEAD^{tree}"], check=True,
@@ -264,7 +342,7 @@ class ProofCheckTests(CheckFixture):
             self.run_check(doc)
         self.assertEqual(snapshot(), before)
         verbs = {args[0] for args in calls}
-        self.assertLessEqual(verbs, {"remote", "rev-parse", "ls-tree", "cat-file", "merge-base"})
+        self.assertLessEqual(verbs, {"remote", "config", "rev-parse", "ls-tree", "cat-file", "merge-base"})
         self.assertIn("merge-base", verbs)
         for args in calls:
             if args[0] == "merge-base":
@@ -325,6 +403,34 @@ class ProofRenderTests(unittest.TestCase):
         self.assertIn('<td>installed</td><td>installed</td><td>unit <span class="pill absent">unverified</span>',
                       checked)
         self.assertIn("evidence levels proven: 0/1", checked)
+
+    def test_evidence_sentences_and_receipt_order(self) -> None:
+        atlas = self.atlas()
+        lines = {c: {line["kind"]: line["text"] for line in explain.explain(atlas, c)["lines"]}
+                 for c in ("api", "worker")}
+        self.assertEqual(lines["api"]["evidence"],
+                         "Evidence: claimed installed, with passed receipts for every level up to it.")
+        self.assertEqual(lines["worker"]["evidence"], "Evidence: claimed unit; passed receipts reach integrated.")
+        page = render.render_html(atlas)
+        row = page[page.index("<td>components.api</td>"):]
+        row = row[:row.index("</tr>")]
+        order = [row.index("<strong>%s</strong>" % level) for level in LADDER[:6]]
+        self.assertEqual(order, sorted(order))
+        empty = copy.deepcopy(atlas)
+        empty["components"][0]["proof"] = {"claim": "source", "receipts": []}
+        self.assertIn("<li>no receipts</li>", render.render_html(empty))
+
+    def test_malformed_check_proof_is_refused(self) -> None:
+        base = {"schema": "estate-atlas-check@3", "host": "h", "checked": 0, "ok": 0, "missing": [],
+                "unresolved": [], "status": "ok"}
+        good = {"owner": "components.api", "claimed": "unit", "proven": None, "receipted": None,
+                "status": "over-claim", "levels": [], "revisions": []}
+        for bad in ({}, [1], [dict(good, owner="")], [dict(good, status="fine")], [dict(good, levels={})],
+                    [dict(good, revisions="x")], [dict(good, proven=3)]):
+            with self.subTest(bad=bad):
+                with self.assertRaises(render.AtlasError):
+                    render.parse_check(dict(base, proof=bad))
+        self.assertEqual(render.parse_check(dict(base, proof=[good]))["proof"][0]["status"], "over-claim")
 
     def test_an_over_claim_is_flagged_without_git(self) -> None:
         doc = model.load(SHOP / "atlas-over-claim.json")

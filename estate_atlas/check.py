@@ -110,6 +110,24 @@ def checkout_identity(path: str | Path, expected_remote: str) -> tuple[str | Non
     return expected_remote, ""
 
 
+def partial_clone(path: str | Path) -> bool:
+    """True when the checkout is a partial clone (it has a promisor remote); read-only.
+
+    Git fetches a missing object of a partial clone on demand. GIT_NO_LAZY_FETCH stops that only on Git versions
+    that know it, so `check` does not read a partial clone at all: its repository stays unresolved."""
+    try:
+        completed = _git(path, "config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$")
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    for line in completed.stdout.decode("utf-8", "replace").splitlines():
+        key, _, value = line.partition(" ")
+        if key == "extensions.partialclone" and value.strip():
+            return True
+        if key.endswith(".promisor") and value.strip().lower() in ("true", "yes", "on", "1"):
+            return True
+    return False
+
+
 def remote_head(path: str | Path, default_branch: str) -> str | None:
     """The commit of `origin/<default_branch>` in a local checkout, or None."""
     try:
@@ -271,6 +289,8 @@ def _resolve(repo_id: str, repos: dict[str, dict[str, Any]], host: str,
         identity, why = checkout_identity(path, repo["remote"])
         if not identity:
             unresolved[repo_id] = why
+        elif partial_clone(path):
+            unresolved[repo_id] = "checkout is a partial clone (a read could fetch a missing object)"
         else:
             head = remote_head(path, repo["default_branch"])
             if head is None:
@@ -377,10 +397,15 @@ def _commit_state(repo: dict[str, Any], head: str, commit: str) -> tuple[str, st
     ("unresolved", why) when a worktree checkout is not a git repository, else ("missing", why). Read-only."""
     path = repo["path"]
     try:
-        if repo.get("mode") == "worktree" and _git(path, "rev-parse", "--git-dir").returncode != 0:
-            return "unresolved", "checkout is not a git repository"
-        kind = _git(path, "cat-file", "-t", commit)
-        if kind.returncode != 0 or kind.stdout.strip() != b"commit":
+        if repo.get("mode") == "worktree":
+            if _git(path, "rev-parse", "--git-dir").returncode != 0:
+                return "unresolved", "checkout is not a git repository"
+            if partial_clone(path):
+                return "unresolved", "checkout is a partial clone (a read could fetch a missing object)"
+        # The exact id must come back: Git also resolves a longer hex string (a SHA-1 id padded to 64 digits) or a
+        # ref that happens to look like one to some other object.
+        resolved = _git(path, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{commit}^{{commit}}")
+        if resolved.returncode != 0 or resolved.stdout.decode("ascii", "replace").strip() != commit:
             return "missing", "commit is not in the repository"
         if repo.get("mode") == "worktree":
             return "ok", ""
