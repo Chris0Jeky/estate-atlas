@@ -54,9 +54,22 @@ The loader accepts `estate-atlas@3` and `estate-atlas@2`, and any namespaced `<n
 ### 2.1 Evidence levels (`proof`, from @3)
 
 `evidence` says where a part lives in source. A `proof` block says how far it has been proven, on an ordered
-**ladder** of levels, lowest first. The default ladder is
-`source`, `unit`, `integrated`, `native`, `installed`, `device`, `accepted`; an atlas may declare its own as
-`"proof_ladder": ["...", "..."]` (1-16 unique ids, lowest first), which then replaces the default for every block.
+**ladder** of levels, lowest first. An atlas may declare its own ladder as `"proof_ladder": ["...", "..."]` (1-16
+unique ids, lowest first), which then replaces the default for every block. The default ladder, and what each level
+is meant to record:
+
+| Level | A passed receipt at this level records |
+|---|---|
+| `source` | the part exists in source at the pinned commit |
+| `unit` | its own tests pass in isolation |
+| `integrated` | it works with the parts it talks to, run together (say what was replaced by a double) |
+| `native` | it runs from a clean build on its real target platform, outside the development checkout |
+| `installed` | it is installed the way its users install it, and works there |
+| `device` | it works on the physical device or environment it serves |
+| `accepted` | its owner or user has accepted it |
+
+The engine checks order and receipts, not the meaning of a level: these meanings are a convention for the people
+writing receipts.
 
 ```json
 "proof": {
@@ -71,18 +84,23 @@ The loader accepts `estate-atlas@3` and `estate-atlas@2`, and any namespaced `<n
 ```
 
 - `claim` is the level the part claims. `receipts` lists what backs it (it may be empty, which proves nothing).
-- A **receipt** records one run of a check: `id` (unique in the block), `level` (on the ladder), `revisions` (1-20
-  `{repo, commit}` pairs: what was checked, as full lowercase commit ids in declared repos), `check` (the command
-  or check name), `outcome` (`passed`, `failed` or `partial`), `unavailable` (what could not be checked, or
-  `nothing`) and an optional `date`. Only a `passed` receipt holds a level.
+- A **receipt** records one run of a check that someone already ran; estate-atlas never runs it. Its fields:
+  `id` (unique in the block), `level` (on the ladder), `revisions` (1-20 `{repo, commit}` pairs naming everything
+  that was checked together, as full lowercase commit ids in declared repos; all of them must resolve), `check`
+  (the command or check name that was run), `outcome` (`passed`, `failed` or `partial`), `unavailable` (a free-text
+  caveat: what that run could not cover, or `nothing`) and an optional `date`. Only `outcome: passed` holds a level;
+  `unavailable` is for readers and never changes the result.
 - **The rule.** A part may claim a level only when that level and every level below it has a passed receipt, and
-  every receipt's revisions resolve. `check` reports, per block, the `claimed` level, the level its receipts reach
-  (`receipted`, read from the block alone) and the level `proven` (receipts whose revisions resolve in git), with a
-  `status`:
+  every receipt's revisions resolve. Levels count from the bottom up: a level whose lower neighbour has no passed
+  receipt is not reached, whatever its own receipts say. `check` reports, per block, the `claimed` level, the
+  highest level reached by passed receipts (`receipted`, read from the block alone) and the highest level reached
+  by passed receipts whose revisions all resolve in git (`proven`), with a `status`:
   - `ok`: proven at least as high as claimed (a higher `proven` is an under-claim, printed but not drift);
   - `over-claim`: some level up to the claim has no passed receipt (drift, even when no checkout is available);
-  - `unverified`: a receipt revision, at any level, does not resolve in an available checkout (drift);
-  - `unresolved`: the claim is receipted, but a needed repository has no checkout here (partial).
+  - `unverified`: a receipt revision, at any level, names a commit that the available checkout does not have,
+    or (in the default mode) one that is not on its default branch (drift, exit 1);
+  - `unresolved`: the claim is receipted, but a needed repository has no usable checkout here, so nothing could be
+    resolved (partial, exit 0, like unresolved evidence).
 - **Resolving a revision** is read-only, like every other read: `git cat-file -t <commit>` must say `commit`, and
   in the default mode `git merge-base --is-ancestor <commit> origin/<default_branch>` must hold, so a receipt
   pins a commit that reached the default branch. `--worktree` only requires the commit to exist in the checkout's
