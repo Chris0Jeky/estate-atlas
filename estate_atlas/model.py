@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Loading and validating an estate-atlas document (schema estate-atlas@2).
+"""Loading and validating an estate-atlas document (schema estate-atlas@3, or @2).
 
 The document lists repos, layers, components, contracts, flows and optional
 vocabularies. Each claim carries evidence references into versioned checkouts.
+From @3, a component, contract or flow may also carry a ``proof`` block: the
+evidence level it claims on an ordered ladder, with receipts for each level.
 ``validate`` raises :class:`AtlasError` on the first violation.
 """
 from __future__ import annotations
@@ -14,19 +16,35 @@ import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-SCHEMA = "estate-atlas@2"
+SCHEMA = "estate-atlas@3"
+SCHEMA_VERSIONS = (2, 3)
+PROOF_SINCE = 3
 MAX_ATLAS_BYTES = 512 * 1024
 
 TOP_KEYS = {"schema", "updated", "repos", "layers", "components", "contracts", "flows"}
-TOP_OPTIONAL = {"vocabularies"}
+TOP_OPTIONAL = {"vocabularies", "proof_ladder"}
 LAYER_KEYS = {"id", "title", "summary"}
 COMPONENT_KEYS = {"id", "title", "layer", "home", "status", "summary", "surfaces", "owns", "evidence"}
-COMPONENT_OPTIONAL = {"instances", "expect"}
+COMPONENT_OPTIONAL = {"instances", "expect", "proof"}
 SURFACE_KEYS = {"kind", "name", "evidence"}
 CONTRACT_KEYS = {"id", "title", "producer", "consumers", "format", "status", "summary", "evidence"}
-CONTRACT_OPTIONAL = {"expect"}
+CONTRACT_OPTIONAL = {"expect", "proof"}
 FLOW_REQUIRED = {"id", "from", "to", "contract", "trigger", "status", "evidence"}
-FLOW_OPTIONAL = {"gap", "expect", "traffic"}
+FLOW_OPTIONAL = {"gap", "expect", "traffic", "proof"}
+
+# Evidence levels (proof blocks, schema @3). The default ladder runs from "the source exists" to "the owner
+# accepted it"; an atlas may declare its own ordered ladder in `proof_ladder`.
+DEFAULT_LADDER = ("source", "unit", "integrated", "native", "installed", "device", "accepted")
+MAX_LADDER = 16
+PROOF_KEYS = {"claim", "receipts"}
+RECEIPT_REQUIRED = {"id", "level", "revisions", "check", "outcome", "unavailable"}
+RECEIPT_OPTIONAL = {"date"}
+REVISION_KEYS = {"repo", "commit"}
+OUTCOMES = ("passed", "failed", "partial")
+MAX_RECEIPTS = 100
+MAX_REVISIONS = 20
+RECEIPT_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,119}")
+COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 TRAFFIC_SOURCES = {"journal", "links", "events"}
 TRAFFIC_KEYS = {"source", "producer", "actor", "subject", "verb", "pulse"}
 REF_REQUIRED = {"repo", "path"}
@@ -84,9 +102,19 @@ def strict_json(text: str) -> Any:
         raise AtlasError(f"invalid JSON: {exc.msg} at line {exc.lineno}") from exc
 
 
+def schema_version(s: Any) -> int | None:
+    """2 or 3 for `estate-atlas@N` or a namespaced `<namespace>/atlas@N`; None for anything else."""
+    if not isinstance(s, str):
+        return None
+    for version in SCHEMA_VERSIONS:
+        if s == f"estate-atlas@{version}" or s.endswith(f"/atlas@{version}"):
+            return version
+    return None
+
+
 def is_atlas_schema(s: Any) -> bool:
-    """True for the current schema or any namespaced variant ending in /atlas@2."""
-    return isinstance(s, str) and (s == SCHEMA or s.endswith("/atlas@2"))
+    """True for estate-atlas@3 or @2, or any namespaced variant ending in /atlas@3 or /atlas@2."""
+    return schema_version(s) is not None
 
 
 def _absolute(value: str) -> bool:
@@ -321,11 +349,121 @@ def _traffic_rule(rule: Any, where: str, vocab_terms: dict[str, set[str]]) -> No
                         raise AtlasError(f"{where}.verb: {pattern!r} is not in the {vocab_id} vocabulary")
 
 
+def ladder_value(value: Any, where: str = "atlas.proof_ladder") -> tuple[str, ...]:
+    """A declared ladder, checked: 1-16 unique level ids, lowest first."""
+    levels = _list(value, where)
+    if not 1 <= len(levels) <= MAX_LADDER:
+        raise AtlasError(f"{where}: must list 1-{MAX_LADDER} levels")
+    for k, level in enumerate(levels):
+        if not isinstance(level, str) or not ID_PATTERN.fullmatch(level):
+            raise AtlasError(f"{where}[{k}]: invalid level id")
+    _unique(levels, where)
+    return tuple(levels)
+
+
+def proof_ladder(doc: dict[str, Any]) -> tuple[str, ...]:
+    """The atlas's evidence ladder, lowest level first: its `proof_ladder`, else DEFAULT_LADDER."""
+    value = doc.get("proof_ladder")
+    if isinstance(value, (list, tuple)) and value:
+        return tuple(value)
+    return DEFAULT_LADDER
+
+
+def proof_block(block: Any, where: str, repo_ids: set[str], ladder: tuple[str, ...],
+                allow_url: bool = False) -> dict[str, Any]:
+    """Check one proof block: a claimed level and its receipts. `allow_url` accepts exported revisions."""
+    _keys(block, where, PROOF_KEYS)
+    if not _is(block["claim"], ladder):
+        raise AtlasError(f"{where}.claim: must be a level of the ladder {list(ladder)}")
+    receipts = _list(block["receipts"], f"{where}.receipts")
+    if len(receipts) > MAX_RECEIPTS:
+        raise AtlasError(f"{where}.receipts: at most {MAX_RECEIPTS} receipts")
+    seen: set[str] = set()
+    for k, receipt in enumerate(receipts):
+        rw = f"{where}.receipts[{k}]"
+        _keys(receipt, rw, RECEIPT_REQUIRED, RECEIPT_OPTIONAL)
+        if not isinstance(receipt["id"], str) or not RECEIPT_ID_PATTERN.fullmatch(receipt["id"]):
+            raise AtlasError(f"{rw}.id: must be 1-120 characters of letters, digits and ._:/@#-")
+        if receipt["id"] in seen:
+            raise AtlasError(f"{where}.receipts: duplicate receipt id {receipt['id']!r}")
+        seen.add(receipt["id"])
+        if not _is(receipt["level"], ladder):
+            raise AtlasError(f"{rw}.level: must be a level of the ladder {list(ladder)}")
+        revisions = _list(receipt["revisions"], f"{rw}.revisions")
+        if not 1 <= len(revisions) <= MAX_REVISIONS:
+            raise AtlasError(f"{rw}.revisions: must list 1-{MAX_REVISIONS} revisions")
+        pinned: set[tuple[str, str]] = set()
+        for j, revision in enumerate(revisions):
+            vw = f"{rw}.revisions[{j}]"
+            _keys(revision, vw, REVISION_KEYS, {"url"} if allow_url else set())
+            if not _is(revision["repo"], repo_ids):
+                raise AtlasError(f"{vw}.repo: {revision['repo']!r} is not a declared repo")
+            if not isinstance(revision["commit"], str) or not COMMIT_PATTERN.fullmatch(revision["commit"]):
+                raise AtlasError(f"{vw}.commit: must be a full lowercase commit id (40 or 64 hex digits)")
+            if (revision["repo"], revision["commit"]) in pinned:
+                raise AtlasError(f"{rw}.revisions: duplicate revision {revision['repo']}@{revision['commit']}")
+            pinned.add((revision["repo"], revision["commit"]))
+            if "url" in revision and (not isinstance(revision["url"], str)
+                                      or not revision["url"].startswith("https://github.com/")):
+                raise AtlasError(f"{vw}.url: must be a github link")
+        _text(receipt["check"], f"{rw}.check")
+        if not _is(receipt["outcome"], OUTCOMES):
+            raise AtlasError(f"{rw}.outcome: must be one of {list(OUTCOMES)}")
+        _text(receipt["unavailable"], f"{rw}.unavailable")
+        if "date" in receipt:
+            date = receipt["date"]
+            if not isinstance(date, str) or not DATE_PATTERN.fullmatch(date):
+                raise AtlasError(f"{rw}.date: must be YYYY-MM-DD")
+            try:
+                datetime.date.fromisoformat(date)
+            except ValueError:
+                raise AtlasError(f"{rw}.date: not a real date") from None
+    return block
+
+
+def proof_entries(doc: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """(owner label, proof block) for every component, contract and flow that carries one, in document order."""
+    out: list[tuple[str, dict[str, Any]]] = []
+    for kind in ("components", "contracts", "flows"):
+        for item in doc.get(kind, []) or []:
+            if isinstance(item, dict) and isinstance(item.get("proof"), dict):
+                out.append((f"{kind}.{item.get('id')}", item["proof"]))
+    return out
+
+
+def receipted_level(block: dict[str, Any], ladder: tuple[str, ...]) -> int:
+    """The index of the highest level reached with a passed receipt at it and every level below; -1 for none.
+
+    This reads the block only. `check` additionally resolves every receipt's revisions in git."""
+    reached = -1
+    for index, level in enumerate(ladder):
+        if not any(isinstance(r, dict) and r.get("level") == level and r.get("outcome") == "passed"
+                   for r in block.get("receipts", []) or []):
+            break
+        reached = index
+    return reached
+
+
+def _no_proof_before_3(doc: dict[str, Any]) -> None:
+    if "proof_ladder" in doc:
+        raise AtlasError(f"atlas.proof_ladder: needs schema estate-atlas@{PROOF_SINCE} or later")
+    for kind in ("components", "contracts", "flows"):
+        items = doc.get(kind)
+        for item in items if isinstance(items, list) else []:
+            if isinstance(item, dict) and "proof" in item:
+                raise AtlasError(f"atlas.{kind}.{item.get('id')}.proof: needs schema "
+                                 f"estate-atlas@{PROOF_SINCE} or later")
+
+
 def validate(doc: dict[str, Any]) -> None:
     """Raise AtlasError on the first violation; return None when valid."""
     _keys(doc, "atlas", TOP_KEYS, TOP_OPTIONAL)
-    if not is_atlas_schema(doc.get("schema")):
-        raise AtlasError(f"atlas.schema: must be {SCHEMA}")
+    version = schema_version(doc.get("schema"))
+    if version is None:
+        raise AtlasError(f"atlas.schema: must be {SCHEMA} (or estate-atlas@2)")
+    if version < PROOF_SINCE:
+        _no_proof_before_3(doc)
+    ladder = ladder_value(doc["proof_ladder"]) if "proof_ladder" in doc else DEFAULT_LADDER
     if not isinstance(doc["updated"], str) or not DATE_PATTERN.fullmatch(doc["updated"]):
         raise AtlasError("atlas.updated: must be YYYY-MM-DD")
     try:
@@ -408,6 +546,8 @@ def validate(doc: dict[str, Any]) -> None:
             _expect_refs(comp["expect"], where, repo_ids, comp["status"])
         if comp["status"] in EVIDENCED and evidence == 0 and not str(comp["home"]).startswith("external:"):
             raise AtlasError(f"{where}: a {comp['status']} component needs at least one evidence reference")
+        if "proof" in comp:
+            proof_block(comp["proof"], f"{where}.proof", repo_ids, ladder)
     _unique([comp["id"] for comp in components], "atlas.components")
     component_ids = {comp["id"] for comp in components}
 
@@ -436,6 +576,8 @@ def validate(doc: dict[str, Any]) -> None:
             _expect_refs(contract["expect"], where, repo_ids, contract["status"])
         if contract["status"] in EVIDENCED and not refs:
             raise AtlasError(f"{where}: a {contract['status']} contract needs at least one evidence reference")
+        if "proof" in contract:
+            proof_block(contract["proof"], f"{where}.proof", repo_ids, ladder)
     _unique([contract["id"] for contract in contracts], "atlas.contracts")
     contract_ids = {contract["id"] for contract in contracts}
 
@@ -467,6 +609,8 @@ def validate(doc: dict[str, Any]) -> None:
             _expect_refs(flow["expect"], where, repo_ids, flow["status"])
         if flow["status"] in EVIDENCED and not refs:
             raise AtlasError(f"{where}: a {flow['status']} flow needs at least one evidence reference")
+        if "proof" in flow:
+            proof_block(flow["proof"], f"{where}.proof", repo_ids, ladder)
     _unique([flow["id"] for flow in flows], "atlas.flows")
 
     vocabs: list[Any] = _list(doc["vocabularies"], "atlas.vocabularies") if "vocabularies" in doc else []

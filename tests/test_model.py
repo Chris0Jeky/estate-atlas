@@ -50,10 +50,13 @@ def minimal(alpha_path: str = "C:/nowhere/alpha", extra_path: str = "C:/nowhere/
 
 class SchemaTests(unittest.TestCase):
     def test_schema_constant_and_matcher(self) -> None:
-        self.assertEqual(model.SCHEMA, "estate-atlas@2")
+        self.assertEqual(model.SCHEMA, "estate-atlas@3")
+        self.assertTrue(model.is_atlas_schema("estate-atlas@3"))
         self.assertTrue(model.is_atlas_schema("estate-atlas@2"))
+        self.assertTrue(model.is_atlas_schema("example/atlas@3"))
         self.assertTrue(model.is_atlas_schema("example/atlas@2"))
         self.assertFalse(model.is_atlas_schema("estate-atlas@1"))
+        self.assertFalse(model.is_atlas_schema("estate-atlas@4"))
         self.assertFalse(model.is_atlas_schema("other"))
         self.assertFalse(model.is_atlas_schema(None))
 

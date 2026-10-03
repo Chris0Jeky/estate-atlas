@@ -14,8 +14,11 @@ from typing import Any
 
 from . import model
 
-SCHEMA = "estate-atlas@2"
-CHECK_SCHEMA = "estate-atlas-check@2"
+SCHEMA = model.SCHEMA
+CHECK_SCHEMA = "estate-atlas-check@3"
+CHECK_VERSIONS = (2, 3)
+PROOF_STATUSES = ("ok", "over-claim", "unverified", "unresolved")
+PROOF_PILL = {"ok": "live", "over-claim": "absent", "unverified": "absent", "unresolved": "planned"}
 
 
 def _markdown_text(value: Any) -> str:
@@ -25,17 +28,15 @@ def _markdown_text(value: Any) -> str:
 
 
 def is_atlas_schema(value: Any) -> bool:
-    """Accept ``estate-atlas@2`` or any namespace ending in ``/atlas@2``."""
-    return isinstance(value, str) and (
-        value == SCHEMA or value.endswith("/atlas@2")
-    )
+    """Accept ``estate-atlas@3`` or ``@2``, or any namespace ending in ``/atlas@3`` or ``/atlas@2``."""
+    return model.is_atlas_schema(value)
 
 
 def is_check_schema(value: Any) -> bool:
-    """Accept ``estate-atlas-check@2`` or any namespace ending likewise."""
-    return isinstance(value, str) and (
-        value == CHECK_SCHEMA or value.endswith("/atlas-check@2")
-    )
+    """Accept ``estate-atlas-check@3`` or ``@2``, or any namespace ending likewise."""
+    return isinstance(value, str) and any(
+        value == "estate-atlas-check@%d" % (v,) or value.endswith("/atlas-check@%d" % (v,))
+        for v in CHECK_VERSIONS)
 
 # The same sets as model.py, so every atlas that validates also renders.
 COMPONENT_STATUSES = ("live", "partial", "planned", "retired")
@@ -285,9 +286,9 @@ def parse_atlas(data: Any) -> dict[str, Any]:
         raise AtlasError("atlas must be a JSON object")
     schema = data.get("schema")
     if not is_atlas_schema(schema):
-        raise AtlasError("atlas schema must be estate-atlas@2 or end in /atlas@2")
+        raise AtlasError("atlas schema must be estate-atlas@3 or @2, or end in /atlas@3 or /atlas@2")
     allowed = {"schema", "updated", "repos", "layers", "components", "contracts", "flows",
-               "vocabularies", "check"}
+               "vocabularies", "check", "proof_ladder"}
     extra = set(data) - allowed
     if extra:
         raise AtlasError("atlas has unknown keys: %s" % (sorted(extra),))
@@ -314,6 +315,20 @@ def parse_atlas(data: Any) -> dict[str, Any]:
         if not isinstance(paths, dict):
             raise AtlasError("repos[%s].paths must be an object" % (rid,))
         repos[rid] = {"remote": remote, "default_branch": branch, "paths": dict(paths)}
+
+    try:
+        if model.schema_version(schema) < model.PROOF_SINCE:
+            model._no_proof_before_3(data)
+        ladder = model.ladder_value(data["proof_ladder"]) if "proof_ladder" in data else model.DEFAULT_LADDER
+    except model.AtlasError as exc:
+        raise AtlasError(str(exc)) from None
+
+    def proof_of(item: dict[str, Any], where: str) -> dict[str, Any]:
+        try:
+            block = model.proof_block(item["proof"], where + ".proof", set(repos), ladder, allow_url=True)
+        except model.AtlasError as exc:
+            raise AtlasError(str(exc)) from None
+        return json.loads(json.dumps(block))
 
     layers_raw = data.get("layers", [])
     if not isinstance(layers_raw, list) or not layers_raw:
@@ -344,7 +359,7 @@ def parse_atlas(data: Any) -> dict[str, Any]:
         if not isinstance(item, dict):
             raise AtlasError("%s must be an object" % (where,))
         if set(item) - {"id", "title", "layer", "home", "status", "summary",
-                         "surfaces", "owns", "evidence", "instances", "expect"}:
+                         "surfaces", "owns", "evidence", "instances", "expect", "proof"}:
             raise AtlasError("%s has unknown keys" % (where,))
         cid = _need_id(item.get("id"), where + ".id")
         if cid in comp_ids:
@@ -395,6 +410,8 @@ def parse_atlas(data: Any) -> dict[str, Any]:
             "instances": instances,
             "expect": expect,
         })
+        if "proof" in item:
+            components[-1]["proof"] = proof_of(item, where)
 
     contracts_raw = data.get("contracts", [])
     if not isinstance(contracts_raw, list):
@@ -406,7 +423,7 @@ def parse_atlas(data: Any) -> dict[str, Any]:
         if not isinstance(item, dict):
             raise AtlasError("%s must be an object" % (where,))
         if set(item) - {"id", "title", "producer", "consumers", "format",
-                         "status", "summary", "evidence", "expect"}:
+                         "status", "summary", "evidence", "expect", "proof"}:
             raise AtlasError("%s has unknown keys" % (where,))
         kid = _need_id(item.get("id"), where + ".id")
         if kid in contract_ids:
@@ -436,6 +453,8 @@ def parse_atlas(data: Any) -> dict[str, Any]:
             "evidence": _ref_list(item.get("evidence", []), where + ".evidence"),
             "expect": cexpect,
         })
+        if "proof" in item:
+            contracts[-1]["proof"] = proof_of(item, where)
 
     flows_raw = data.get("flows", [])
     if not isinstance(flows_raw, list):
@@ -447,7 +466,7 @@ def parse_atlas(data: Any) -> dict[str, Any]:
         if not isinstance(item, dict):
             raise AtlasError("%s must be an object" % (where,))
         if set(item) - {"id", "from", "to", "contract", "trigger",
-                         "status", "gap", "evidence", "expect", "traffic"}:
+                         "status", "gap", "evidence", "expect", "traffic", "proof"}:
             raise AtlasError("%s has unknown keys" % (where,))
         fid = _need_id(item.get("id"), where + ".id")
         if fid in flow_ids:
@@ -487,6 +506,8 @@ def parse_atlas(data: Any) -> dict[str, Any]:
             "expect": fexpect,
             "traffic": traffic,
         })
+        if "proof" in item:
+            flows[-1]["proof"] = proof_of(item, where)
 
     seen_instances: dict[str, str] = {}
     for comp in components:
@@ -498,6 +519,8 @@ def parse_atlas(data: Any) -> dict[str, Any]:
     out: dict[str, Any] = {"schema": schema, "updated": updated, "repos": repos, "layers": layers,
             "components": components, "contracts": contracts, "flows": flows,
             "vocabularies": vocabularies}
+    if "proof_ladder" in data:
+        out["proof_ladder"] = list(ladder)
     if "check" in data:
         out["check"] = parse_check(data["check"])
     return out
@@ -557,11 +580,38 @@ def _parse_check_promotable(value: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _parse_check_proof(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise AtlasError("check.proof must be a list")
+    out: list[dict[str, Any]] = []
+    for i, item in enumerate(value):
+        where = "check.proof[%d]" % i
+        if not isinstance(item, dict):
+            raise AtlasError("%s must be an object" % (where,))
+        for key in ("owner", "claimed"):
+            if not isinstance(item.get(key), str) or not item[key]:
+                raise AtlasError("%s.%s must be a non-empty string" % (where, key))
+        for key in ("proven", "receipted"):
+            if item.get(key) is not None and not isinstance(item.get(key), str):
+                raise AtlasError("%s.%s must be a string or null" % (where, key))
+        if item.get("status") not in PROOF_STATUSES:
+            raise AtlasError("%s.status must be one of %s" % (where, list(PROOF_STATUSES)))
+        for key in ("levels", "revisions"):
+            if not isinstance(item.get(key, []), list):
+                raise AtlasError("%s.%s must be a list" % (where, key))
+        out.append({"owner": item["owner"], "claimed": item["claimed"], "proven": item.get("proven"),
+                    "receipted": item.get("receipted"), "status": item["status"],
+                    "levels": list(item.get("levels", [])), "revisions": list(item.get("revisions", []))})
+    return out
+
+
 def parse_check(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise AtlasError("check must be a JSON object")
     if not is_check_schema(data.get("schema")):
-        raise AtlasError("check schema must be estate-atlas-check@2 or end in /atlas-check@2")
+        raise AtlasError("check schema must be estate-atlas-check@3 or @2, or end in /atlas-check@3 or @2")
     for key in ("host", "status"):
         if not isinstance(data.get(key), str) or not data[key]:
             raise AtlasError("check.%s must be a non-empty string" % (key,))
@@ -587,7 +637,8 @@ def parse_check(data: Any) -> dict[str, Any]:
             "heads": dict(heads), "status": data["status"],
             "vocabularies": _parse_check_vocabularies(data.get("vocabularies")),
             "promotable": _parse_check_promotable(data.get("promotable")),
-            "summary": dict(summary), "traffic": list(traffic)}
+            "summary": dict(summary), "traffic": list(traffic),
+            "proof": _parse_check_proof(data.get("proof"))}
 
 
 def ref_href(ref: dict[str, Any],
@@ -992,7 +1043,7 @@ document.querySelectorAll(".viewbtn").forEach(function(b){
 b.addEventListener("click",function(){
 var v=b.getAttribute("data-view");
 if(!panel.hidden){panel.hidden=true;panel.innerHTML="";lastCard=null;resetDim();}
-["map","gaps","contracts","flows","vocabularies"].forEach(function(name){
+["map","gaps","contracts","flows","vocabularies","evidence"].forEach(function(name){
 var el=document.getElementById("view-"+name);
 if(el){el.hidden=(name!==v);}
 });
@@ -1080,6 +1131,60 @@ def _expect_links(refs: list[dict[str, Any]], resolved: Any) -> str:
     return ", ".join(parts)
 
 
+def proof_rows(atlas: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """(owner label, proof block) for every part that claims a level: components, contracts, then flows, by id."""
+    rows: list[tuple[str, dict[str, Any]]] = []
+    for kind in ("components", "contracts", "flows"):
+        for item in sorted(atlas.get(kind, []), key=lambda x: str(x.get("id"))):
+            if isinstance(item.get("proof"), dict):
+                rows.append(("%s.%s" % (kind, item["id"]), item["proof"]))
+    return rows
+
+
+def _commit_link(rev: dict[str, Any], atlas_repos: dict[str, dict[str, Any]]) -> str:
+    label = "%s@%s" % (rev["repo"], rev["commit"][:12])
+    href = rev.get("url")
+    if not href and rev["repo"] in atlas_repos:
+        href = "https://github.com/%s/commit/%s" % (atlas_repos[rev["repo"]]["remote"], rev["commit"])
+    return _link(str(href), label) if href else html.escape(label)
+
+
+def _evidence_html(atlas: dict[str, Any], checked: dict[str, dict[str, Any]]) -> str:
+    """The Evidence view: each claim, how far its receipts reach, and (with a check) how far they are proven."""
+    ladder = model.proof_ladder(atlas)
+    position = {level: index for index, level in enumerate(ladder)}
+    rows: list[str] = []
+    for owner, block in proof_rows(atlas):
+        reached = model.receipted_level(block, ladder)
+        receipted = ladder[reached] if reached >= 0 else "no level"
+        result = checked.get(owner)
+        if result is not None:
+            proven = result.get("proven") or "no level"
+            status = str(result.get("status"))
+            verdict = '%s <span class="pill %s">%s</span>' % (
+                html.escape(proven), PROOF_PILL.get(status, "planned"), html.escape(status))
+        else:
+            verdict = "not checked"
+        receipts = sorted(block["receipts"], key=lambda r: (position[r["level"]], r["id"]))
+        items = "".join(
+            "<li><strong>%s</strong> %s: %s, %s (%s). Unavailable: %s%s</li>"
+            % (html.escape(r["level"]), html.escape(r["id"]), html.escape(r["outcome"]),
+               html.escape(r["check"]), ", ".join(_commit_link(v, atlas["repos"]) for v in r["revisions"]),
+               html.escape(r["unavailable"]), (" (%s)" % (html.escape(r["date"]),)) if "date" in r else "")
+            for r in receipts)
+        flag = "" if reached >= position[block["claim"]] else ' <span class="pill absent">claims more than its receipts</span>'
+        rows.append(
+            "<tr><td>%s</td><td>%s%s</td><td>%s</td><td>%s</td><td><ul>%s</ul></td></tr>"
+            % (html.escape(owner), html.escape(block["claim"]), flag, html.escape(receipted), verdict,
+               items or "<li>no receipts</li>"))
+    return (
+        "<p>Ladder, lowest first: %s. A level counts only when it and every level below it have a passed receipt; "
+        "a check also resolves every receipt revision in git.</p>"
+        "<table><thead><tr><th>Part</th><th>Claimed</th><th>Receipts reach</th><th>Proven (check)</th>"
+        "<th>Receipts</th></tr></thead><tbody>%s</tbody></table>"
+        % (html.escape(", ".join(ladder)), "".join(rows)))
+
+
 def render_html(atlas: dict[str, Any],
                 check: dict[str, Any] | None = None) -> str:
     atlas_repos = atlas["repos"]
@@ -1118,6 +1223,10 @@ def render_html(atlas: dict[str, Any],
             suffix += ", traffic_overlaps: %d" % (summary["traffic_overlaps"],)
         elif "traffic" in effective:
             suffix += ", traffic_overlaps: %d" % (len(effective["traffic"]),)
+        proof_results = list(effective.get("proof", []))
+        if proof_results:
+            suffix += ", evidence levels proven: %d/%d" % (
+                sum(1 for item in proof_results if item.get("status") == "ok"), len(proof_results))
         check_html = (
             '<p class="%s">Checked against origin/main on %s: %d/%d references present'
             " (missing: %d, unresolved: %d%s)</p>"
@@ -1317,6 +1426,12 @@ def render_html(atlas: dict[str, Any],
 
     vocab_btn = ('<button class="viewbtn" data-view="vocabularies" aria-pressed="false">Vocabularies</button>'
                  if vocabularies else "")
+    has_proof = bool(proof_rows(atlas))
+    checked_proof = {str(item.get("owner")): item for item in (effective or {}).get("proof", []) or []}
+    evidence_btn = ('<button class="viewbtn" data-view="evidence" aria-pressed="false">Evidence</button>'
+                    if has_proof else "")
+    evidence_main = ('<main id="view-evidence" hidden><h2 style="margin:12px 20px">Evidence levels</h2>'
+                     + _evidence_html(atlas, checked_proof) + "</main>") if has_proof else ""
     vocab_main = ('<main id="view-vocabularies" hidden><h2 style="margin:12px 20px">Vocabularies</h2>'
                   + vocab_html + "</main>") if vocabularies else ""
     parts = [
@@ -1349,6 +1464,8 @@ def render_html(atlas: dict[str, Any],
         '<button class="viewbtn" data-view="contracts" aria-pressed="false">Contracts</button>',
         '<button class="viewbtn" data-view="flows" aria-pressed="false">Flows</button>',
         vocab_btn,
+        # The Evidence view exists only for an atlas with proof blocks; without one the page is as before.
+        *([evidence_btn] if has_proof else []),
         "</div>",
         '<main id="view-map"><div id="map">',
         '<svg id="edges" aria-hidden="true"><defs>' + markers + '</defs><g id="paths"></g></svg>',
@@ -1360,6 +1477,7 @@ def render_html(atlas: dict[str, Any],
         '<main id="view-flows" hidden><h2 style="margin:12px 20px">Flows</h2>'
         + flows_html + "</main>",
         vocab_main,
+        *([evidence_main] if has_proof else []),
         '<div id="tip" role="status"></div>',
         '<aside id="panel" role="dialog" aria-label="Component detail" hidden></aside>',
         '<script type="application/json" id="atlas-data">' + json_text + "</script>",

@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .model import proof_ladder, receipted_level
 from .render import order_cards, read_json_file
 
 EXPLAIN_SCHEMA = "estate-atlas-explain@1"
@@ -30,7 +31,7 @@ HEART = "\u2665"
 ARROW = "\u2192"
 
 GAP_STATUSES = ("planned", "partial", "documented", "absent")
-LINE_ORDER = ("what", "fed_by", "feeds", "contracts", "running",
+LINE_ORDER = ("what", "evidence", "fed_by", "feeds", "contracts", "running",
               "this_week", "gaps")
 
 
@@ -105,6 +106,25 @@ def _flow_key(traffic: dict[str, Any] | None, flow: dict[str, Any]) -> tuple[int
     return (-(d7 + pulse), fid)
 
 
+def evidence_text(atlas: dict[str, Any], block: Any) -> str:
+    """One sentence comparing a proof block's claimed level with how far its receipts reach ("" for no block).
+
+    Receipts are read as recorded; only `check` resolves their revisions in git."""
+    if not isinstance(block, dict) or not isinstance(block.get("claim"), str):
+        return ""
+    ladder = proof_ladder(atlas)
+    if block["claim"] not in ladder:
+        return ""
+    claimed = ladder.index(block["claim"])
+    reached = receipted_level(block, ladder)
+    if reached == claimed:
+        return "Evidence: claimed %s, with passed receipts for every level up to it." % (block["claim"],)
+    if reached > claimed:
+        return "Evidence: claimed %s; passed receipts reach %s." % (block["claim"], ladder[reached])
+    return "Evidence: claimed %s, but passed receipts reach only %s." % (
+        block["claim"], ladder[reached] if reached >= 0 else "no level")
+
+
 def _touching(atlas: dict[str, Any], cid: str) -> list[dict[str, Any]]:
     return [f for f in atlas.get("flows", []) if isinstance(f, dict)
             and (f.get("from") == cid or f.get("to") == cid)]
@@ -170,6 +190,9 @@ def explain(atlas: dict[str, Any], component_id: str,
     if isinstance(owns, list) and [o for o in owns if isinstance(o, str)]:
         what += " It owns %s." % (_join([str(o) for o in owns if isinstance(o, str)]),)
     lines.append({"kind": "what", "text": what, "refs": []})
+    evidence = evidence_text(atlas, comp.get("proof"))
+    if evidence:
+        lines.append({"kind": "evidence", "text": evidence, "refs": []})
 
     in_flows = sorted(
         (f for f in atlas.get("flows", [])
@@ -338,6 +361,8 @@ def tour(atlas: dict[str, Any],
             part = explain(atlas, cid, traffic=traffic)
             texts = {line["kind"]: line["text"] for line in part["lines"]}
             text = texts.get("what", "")
+            if "evidence" in texts:
+                text += " " + texts["evidence"]
             if "this_week" in texts:
                 text += " " + texts["this_week"]
             steps.append({"kind": "part", "id": cid,

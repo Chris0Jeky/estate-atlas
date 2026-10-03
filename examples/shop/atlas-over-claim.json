@@ -1,0 +1,88 @@
+{
+  "schema": "estate-atlas@3",
+  "updated": "2026-10-01",
+  "repos": {
+    "shop": {
+      "remote": "example/shop",
+      "default_branch": "main",
+      "paths": {}
+    }
+  },
+  "layers": [
+    {
+      "id": "services",
+      "title": "Services",
+      "summary": "The shop's own logic."
+    }
+  ],
+  "components": [
+    {
+      "id": "api",
+      "title": "Shop API",
+      "layer": "services",
+      "home": "shop",
+      "status": "live",
+      "summary": "Takes orders. Claims to be installed, but its receipts stop at integrated.",
+      "surfaces": [],
+      "owns": [
+        "orders"
+      ],
+      "evidence": [
+        {
+          "repo": "shop",
+          "path": "src/api.py",
+          "anchor": "def create_order"
+        }
+      ],
+      "proof": {
+        "claim": "installed",
+        "receipts": [
+          {
+            "id": "api-source-1",
+            "level": "source",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "python -m estate_atlas check examples/shop/atlas.json --repo shop=examples/shop --worktree",
+            "outcome": "passed",
+            "unavailable": "nothing: the files are read from the checkout",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "api-unit-1",
+            "level": "unit",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "python -m unittest shop.tests",
+            "outcome": "passed",
+            "unavailable": "no coverage report is kept for the stubs",
+            "date": "2026-10-01"
+          },
+          {
+            "id": "api-integrated-1",
+            "level": "integrated",
+            "revisions": [
+              {
+                "repo": "shop",
+                "commit": "496bd8b8c25634ed869a50cad7374a1c34299f83"
+              }
+            ],
+            "check": "shop end-to-end suite against a local database",
+            "outcome": "passed",
+            "unavailable": "the payments provider is a test double",
+            "date": "2026-10-01"
+          }
+        ]
+      }
+    }
+  ],
+  "contracts": [],
+  "flows": []
+}
