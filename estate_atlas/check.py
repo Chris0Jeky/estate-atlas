@@ -3,9 +3,12 @@
 
 ``check`` verifies every evidence reference against each repository's
 ``origin/<default branch>`` in the local checkout (the file exists at that
-commit and contains the reference's anchor text). It reads through ``git show``
-and related commands, never fetches, and never changes a checkout. ``export``
-adds hosted links on every evidence, vocabulary source and expect reference.
+commit and contains the reference's anchor text), and every proof block's
+claimed level against its receipts (each level up to the claim has a passed
+receipt, and every receipt revision is a commit on that branch). It reads
+through ``git show`` and related commands, never fetches, and never changes a
+checkout. ``export`` adds hosted links on every evidence, vocabulary source,
+expect reference and receipt revision.
 """
 from __future__ import annotations
 
@@ -17,10 +20,12 @@ import re
 from urllib.parse import urlsplit
 from typing import Any
 
-from .model import AtlasError, REMOTE_PATTERN, instance_index, match_instance
+from .model import (AtlasError, REMOTE_PATTERN, instance_index, match_instance, proof_entries, proof_ladder,
+                    receipted_level)
 
-CHECK_SCHEMA = "estate-atlas-check@2"
-EXPORT_SCHEMA = "estate-atlas-export@2"
+CHECK_SCHEMA = "estate-atlas-check@3"
+EXPORT_SCHEMA = "estate-atlas-export@3"
+PROOF_STATUSES = ("ok", "over-claim", "unverified", "unresolved")
 MAX_EVIDENCE_BYTES = 8 * 1024 * 1024
 
 __all__ = [
@@ -54,8 +59,10 @@ def _git(path: str | Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     env = {name: value for name, value in os.environ.items()
            if name.upper() not in _GIT_LOCAL_ENV
            and not name.upper().startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_", "GIT_TRACE"))}
-    # Git initializes trace2 from owner config before command-line overrides.
-    env.update(GIT_OPTIONAL_LOCKS="0", GIT_TRACE2="0", GIT_TRACE2_EVENT="0", GIT_TRACE2_PERF="0")
+    # Git initializes trace2 from owner config before command-line overrides. A partial clone would fetch a
+    # missing object on demand: GIT_NO_LAZY_FETCH keeps every read local.
+    env.update(GIT_OPTIONAL_LOCKS="0", GIT_TRACE2="0", GIT_TRACE2_EVENT="0", GIT_TRACE2_PERF="0",
+               GIT_NO_LAZY_FETCH="1")
     return subprocess.run(["git", "-C", str(path), *args], env=env,
                           capture_output=True, timeout=_GIT_TIMEOUT_S)
 
@@ -365,6 +372,82 @@ def _blob(path: str, commit: str, relative: str) -> tuple[bytes | None, str]:
     return shown.stdout, ""
 
 
+def _commit_state(repo: dict[str, Any], head: str, commit: str) -> tuple[str, str]:
+    """("ok", "") when `commit` is a commit on origin/<default branch> (in worktree mode: in the repository),
+    ("unresolved", why) when a worktree checkout is not a git repository, else ("missing", why). Read-only."""
+    path = repo["path"]
+    try:
+        if repo.get("mode") == "worktree" and _git(path, "rev-parse", "--git-dir").returncode != 0:
+            return "unresolved", "checkout is not a git repository"
+        kind = _git(path, "cat-file", "-t", commit)
+        if kind.returncode != 0 or kind.stdout.strip() != b"commit":
+            return "missing", "commit is not in the repository"
+        if repo.get("mode") == "worktree":
+            return "ok", ""
+        ancestor = _git(path, "merge-base", "--is-ancestor", commit, head)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return "missing", f"git failed: {type(exc).__name__}"
+    if ancestor.returncode == 0:
+        return "ok", ""
+    if ancestor.returncode == 1:
+        return "missing", f"commit is not on origin/{repo['default_branch']}"
+    return "missing", "git merge-base failed"
+
+
+def _proof(owner: str, block: dict[str, Any], ladder: tuple[str, ...], revision: Any) -> dict[str, Any]:
+    """One proof result. `revision(repo, commit)` returns ("ok" | "unresolved" | "missing", why)."""
+    receipts = list(block["receipts"])
+    states: dict[str, str] = {}
+    problems: list[dict[str, Any]] = []
+    for receipt in receipts:
+        worst = "ok"
+        for rev in receipt["revisions"]:
+            state, why = revision(rev["repo"], rev["commit"])
+            if state == "missing":
+                worst = "missing"
+                problems.append({"receipt": receipt["id"], "repo": rev["repo"], "commit": rev["commit"], "why": why})
+            elif state == "unresolved" and worst == "ok":
+                worst = "unresolved"
+        states[receipt["id"]] = worst
+    position = {level: index for index, level in enumerate(ladder)}
+    claimed = position[block["claim"]]
+    top = max([claimed] + [position[r["level"]] for r in receipts])
+    levels: list[dict[str, Any]] = []
+    for index in range(top + 1):
+        at = [r for r in receipts if r["level"] == ladder[index]]
+        passed = [states[r["id"]] for r in at if r["outcome"] == "passed"]
+        if "ok" in passed:
+            state = "proven"
+        elif "unresolved" in passed:
+            state = "unresolved"
+        elif passed:
+            state = "unverified"
+        elif at:
+            state = "not-passed"
+        else:
+            state = "none"
+        levels.append({"level": ladder[index], "state": state, "receipts": len(at)})
+    proven = -1
+    for item in levels:
+        if item["state"] != "proven":
+            break
+        proven += 1
+    receipted = receipted_level(block, ladder)
+    if problems:
+        status = "unverified"
+    elif receipted < claimed:
+        status = "over-claim"
+    elif proven < claimed:
+        status = "unresolved"
+    else:
+        status = "ok"
+    problems.sort(key=lambda item: (item["receipt"], item["repo"], item["commit"]))
+    return {"owner": owner, "claimed": block["claim"],
+            "receipted": ladder[receipted] if receipted >= 0 else None,
+            "proven": ladder[proven] if proven >= 0 else None,
+            "status": status, "levels": levels, "revisions": problems}
+
+
 def check(doc: dict[str, Any], repos: dict[str, dict[str, Any]], host: str) -> dict[str, Any]:
     """Verify every evidence reference at each repository's origin/<default branch>; read-only."""
     heads: dict[str, str] = {}
@@ -450,6 +533,18 @@ def check(doc: dict[str, Any], repos: dict[str, dict[str, Any]], host: str) -> d
         if all(_ref_resolves(ref, repos, host, heads, expect_unresolved, blobs) for ref in refs):
             promotable.append({"owner": owner, "refs": len(refs)})
 
+    commits: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def revision(repo_id: str, commit: str) -> tuple[str, str]:
+        _resolve(repo_id, repos, host, heads, unresolved)
+        if repo_id in unresolved:  # not counted in `unresolved[].refs`, which counts evidence references
+            return "unresolved", unresolved[repo_id]
+        if (repo_id, commit) not in commits:
+            commits[(repo_id, commit)] = _commit_state(repos[repo_id], heads[repo_id], commit)
+        return commits[(repo_id, commit)]
+
+    proof = [_proof(owner, block, proof_ladder(doc), revision) for owner, block in proof_entries(doc)]
+
     indexed: list[tuple[str, list[dict[str, Any]]]] = []
     for flow in doc.get("flows", []) or []:
         if isinstance(flow, dict) and isinstance(flow.get("id"), str):
@@ -480,10 +575,16 @@ def check(doc: dict[str, Any], repos: dict[str, dict[str, Any]], host: str) -> d
                "gaps": sum(1 for flow in doc.get("flows", []) or []
                            if isinstance(flow, dict) and flow.get("status") != "live"),
                "traffic_rules": sum(len(rules) for _, rules in indexed),
-               "traffic_overlaps": len(traffic)}
-    if missing or any(item["status"] == "drift" for item in vocabularies) or traffic:
+               "traffic_overlaps": len(traffic),
+               "proof_claims": len(proof),
+               "proof_over_claims": sum(1 for item in proof if item["status"] == "over-claim"),
+               "proof_unverified": sum(1 for item in proof if item["status"] == "unverified"),
+               "proof_unresolved": sum(1 for item in proof if item["status"] == "unresolved")}
+    if (missing or any(item["status"] == "drift" for item in vocabularies) or traffic
+            or any(item["status"] in ("over-claim", "unverified") for item in proof)):
         status = "drift"
-    elif unresolved or any(item["status"] == "unresolved" for item in vocabularies):
+    elif (unresolved or any(item["status"] == "unresolved" for item in vocabularies)
+          or any(item["status"] == "unresolved" for item in proof)):
         status = "partial"
     else:
         status = "ok"
@@ -492,12 +593,12 @@ def check(doc: dict[str, Any], repos: dict[str, dict[str, Any]], host: str) -> d
                            for repo_id, why in sorted(unresolved.items())],
             "heads": dict(sorted(heads.items())), "status": status,
             "vocabularies": vocabularies, "promotable": promotable, "summary": summary,
-            "traffic": traffic}
+            "traffic": traffic, "proof": proof}
 
 
 def export(doc: dict[str, Any], repos: dict[str, dict[str, Any]],
            check_report: dict[str, Any] | None = None) -> dict[str, Any]:
-    """The atlas plus a hosted `url` on every evidence, vocabulary source and expect reference."""
+    """The atlas plus a hosted `url` on every evidence, vocabulary source, expect reference and receipt revision."""
     heads: dict[str, str | None] = {}
 
     def head_of(repo_id: str) -> str | None:
@@ -525,6 +626,10 @@ def export(doc: dict[str, Any], repos: dict[str, dict[str, Any]],
             add_url(vocab["source"])
     for _, ref in expect_refs(out):
         add_url(ref)
+    for _, block in proof_entries(out):
+        for receipt in block["receipts"]:
+            for rev in receipt["revisions"]:
+                rev["url"] = f"https://github.com/{repos[rev['repo']]['remote']}/commit/{rev['commit']}"
     if check_report is not None:
         out["check"] = check_report
     return out
@@ -552,4 +657,19 @@ def _summary(report: dict[str, Any]) -> str:
     for item in report.get("traffic", []) or []:
         lines.append(f"- traffic overlap: {item['flows'][0]}[{item['rules'][0]}] "
                      f"with {item['flows'][1]}[{item['rules'][1]}]")
+    proof = report.get("proof", []) or []
+    if proof:
+        held = sum(1 for item in proof if item["status"] == "ok")
+        lines.append(f"Evidence levels: {held}/{len(proof)} claims proven.")
+    for item in proof:
+        if item["status"] == "ok" and item["proven"] == item["claimed"]:
+            continue
+        label = "under-claim" if item["status"] == "ok" else item["status"]
+        reach = (f", receipts reach {item['receipted'] or 'no level'}"
+                 if item["receipted"] != item["proven"] else "")
+        lines.append(f"- proof {label}: {item['owner']}: claimed {item['claimed']}, "
+                     f"proven {item['proven'] or 'no level'}{reach}")
+        for problem in item["revisions"]:
+            lines.append(f"  - receipt {problem['receipt']}: {problem['repo']}@{problem['commit'][:12]}: "
+                         f"{problem['why']}")
     return "\n".join(lines) + "\n"
