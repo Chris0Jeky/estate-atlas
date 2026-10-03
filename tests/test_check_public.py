@@ -4,12 +4,16 @@ Every pattern the scanner hunts is assembled from fragments, so this file does n
 """
 from __future__ import annotations
 
+import contextlib
+import importlib.util
+import io
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check_public.py"
@@ -285,6 +289,178 @@ class HistoryTests(unittest.TestCase):
         repo.scan("--history")
         after = subprocess.run(status, cwd=repo.path, capture_output=True, text=True).stdout
         self.assertEqual(before, after)
+
+
+def load_script():
+    spec = importlib.util.spec_from_file_location("check_public_under_test", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def head(repo):
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo.path, capture_output=True, text=True).stdout.strip()
+
+
+class ReviewRoundTests(unittest.TestCase):
+    """Findings of the first review round on the scan itself."""
+
+    def repo_with(self, files, terms="acme-internal\n"):
+        repo = Repo(self)
+        for name, text in files.items():
+            repo.write(name, text)
+        repo.commit()
+        if terms is not None:
+            repo.write(".public-scan.local", terms)
+        return repo
+
+    def assertNoTerm(self, result):
+        text = (result.stdout + result.stderr).lower()
+        for variant in ("acme-internal", "acme_internal", "acme internal", "acmeinternal"):
+            self.assertNotIn(variant, text)
+
+    def test_tree_scan_never_prints_a_private_file_name(self):
+        repo = self.repo_with({"acme-internal.txt": "plain\n", "docs/acme-internal/notes.md": "acme-internal\n"})
+        result = repo.scan()
+        self.assertEqual(result.returncode, 1)
+        self.assertNoTerm(result)
+        self.assertIn("ac***", result.stdout)
+        self.assertIn("private-term #1", result.stdout)
+
+    def test_history_never_prints_a_private_path_or_ref_name(self):
+        repo = self.repo_with({"acme-internal.txt": "acme-internal\n"})
+        repo.write("acme-internal.txt", "gone\n")
+        repo.commit()
+        git(repo.path, "branch", "acme-internal")
+        git(repo.path, "mv", "acme-internal.txt", "kept.txt")
+        repo.commit("rename")
+        result = repo.scan("--history")
+        self.assertEqual(result.returncode, 1)
+        self.assertNoTerm(result)
+        self.assertIn("(ref name)", result.stdout)
+        self.assertIn("(file name)", result.stdout)
+
+    def test_history_runs_git_log_without_textconv(self):
+        module = load_script()
+        calls = []
+
+        def fake(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+        with patch.object(module.subprocess, "run", fake):
+            module.scan_history(ROOT, module.Terms([]))
+        log = next(argv for argv in calls if "log" in argv)
+        self.assertIn("--no-textconv", log)
+        self.assertIn("--no-ext-diff", log)
+
+    def test_history_finds_an_empty_or_binary_file_named_after_a_term(self):
+        repo = Repo(self)
+        repo.write("keep.txt", "x\n")
+        repo.write("acme-internal-empty.txt", "")
+        (repo.path / "acme-internal-blob.bin").write_bytes(b"\x00\x01\x02")
+        repo.commit("add")
+        git(repo.path, "rm", "-q", "acme-internal-empty.txt", "acme-internal-blob.bin")
+        repo.commit("remove")
+        repo.write(".public-scan.local", "acme-internal\n")
+        self.assertEqual(repo.scan().returncode, 0)
+        result = repo.scan("--history")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertNoTerm(result)
+        self.assertEqual(result.stdout.count("(file name)"), 4)  # two files, each in the adding and removing commit
+
+    def test_hunk_payload_that_looks_like_a_file_header_is_still_scanned(self):
+        repo = Repo(self)
+        repo.write("a.txt", "base\n-- acme-internal\n")
+        repo.commit("added a double-dash line")
+        first = head(repo)
+        repo.write("a.txt", "base\n")
+        repo.commit("deleted it")
+        second = head(repo)
+        repo.write("a.txt", "base\n++ acme-internal\n")
+        repo.commit("added a double-plus line")
+        third = head(repo)
+        repo.write("a.txt", "base\n")
+        repo.commit("deleted it")
+        repo.write(".public-scan.local", "acme-internal\n")
+        result = repo.scan("--history")
+        self.assertEqual(result.returncode, 1)
+        for sha in (first, second, third):
+            self.assertRegex(result.stdout, sha[:12] + r" a\.txt:\d+: private-term #1")
+
+    def test_generic_patterns_ignore_case_and_accept_unicode_accounts(self):
+        cases = {
+            "lower windows": "c:" + "\\users\\alice\\x",
+            "lower host": "desktop" + "-ab12cd3",
+            "upper tailnet": "node.TS" + ".NET",
+            "unicode home": "/ho" + "me/élodie/work",
+            "account with a space": "C:" + "\\Users\\user name\\docs",
+            "windows unicode": "C:" + "\\Users\\élodie\\docs",
+        }
+        for label, text in cases.items():
+            with self.subTest(label):
+                repo = self.repo_with({"n.md": text + "\n"}, terms=None)
+                result = repo.scan()
+                self.assertEqual(result.returncode, 1, result.stdout)
+        for text in ("C:" + "\\Users\\user\\docs", "DESKTOP" + "-publishing", "desktop" + "-support"):
+            with self.subTest(clean=text):
+                repo = self.repo_with({"n.md": text + "\n"}, terms=None)
+                self.assertEqual(repo.scan().returncode, 0)
+
+    def test_an_unreadable_tracked_file_fails_closed_with_a_masked_name(self):
+        repo = self.repo_with({"acme-internal.txt": "x\n", "b.txt": "y\n"})
+        module = load_script()
+        real = Path.read_bytes
+
+        def deny(self_path):
+            if self_path.name == "acme-internal.txt":
+                raise PermissionError("denied")
+            return real(self_path)
+
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(Path, "read_bytes", deny), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            code = module.main(["--repo", str(repo.path)])
+        self.assertEqual(code, 2)
+        self.assertNotIn("acme-internal", (out.getvalue() + err.getvalue()).lower())
+        self.assertIn("ac***", err.getvalue())
+
+    def test_a_tracked_file_deleted_from_disk_is_skipped_not_fatal(self):
+        repo = self.repo_with({"a.txt": "x\n", "b.txt": "y\n"}, terms=None)
+        (repo.path / "a.txt").unlink()
+        self.assertEqual(repo.scan().returncode, 0)
+
+    def test_an_unreadable_default_terms_file_is_a_usage_error(self):
+        repo = self.repo_with({"a.txt": "x\n"})
+        module = load_script()
+        real = Path.read_bytes
+
+        def deny(self_path):
+            if self_path.name == ".public-scan.local":
+                raise PermissionError("denied")
+            return real(self_path)
+
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(Path, "read_bytes", deny), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            self.assertEqual(module.main(["--repo", str(repo.path)]), 2)
+
+    def test_a_term_matches_itself_literally(self):
+        repo = self.repo_with({"d.md": "see widget--workshop\n"}, terms="widget--workshop\n")
+        self.assertEqual(repo.scan().returncode, 1)
+
+    def test_very_short_lines_are_scanned(self):
+        repo = self.repo_with({"d.md": "ok\nz\n"}, terms="z\n")
+        result = repo.scan()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("d.md:2: private-term #1", result.stdout)
+        repo = Repo(self)
+        repo.write("d.md", "z\n")
+        repo.commit()
+        repo.write("d.md", "ok\n")
+        repo.commit()
+        repo.write(".public-scan.local", "z\n")
+        self.assertEqual(repo.scan("--history").returncode, 1)
 
 
 if __name__ == "__main__":
