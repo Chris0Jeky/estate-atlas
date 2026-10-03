@@ -13,9 +13,11 @@ import json
 import os
 import subprocess
 from pathlib import Path
+import re
+from urllib.parse import urlsplit
 from typing import Any
 
-from .model import AtlasError, instance_index, match_instance
+from .model import AtlasError, REMOTE_PATTERN, instance_index, match_instance
 
 CHECK_SCHEMA = "estate-atlas-check@2"
 EXPORT_SCHEMA = "estate-atlas-export@2"
@@ -59,19 +61,27 @@ def _git(path: str | Path, *args: str) -> subprocess.CompletedProcess[bytes]:
 
 
 def _parse_remote_id(url: str) -> str | None:
-    """Best-effort `owner/name` from a git remote URL, else None."""
+    """Resolve supported GitHub origins, never just a matching owner/name suffix."""
     text = url.strip()
-    if text.endswith(".git"):
-        text = text[:-4]
-    lowered = text.lower()
-    marker = "github.com"
-    tail = text
-    if marker in lowered:
-        tail = text[lowered.index(marker) + len(marker):].lstrip("/: ")
-    parts = [seg for seg in tail.replace("\\", "/").split("/") if seg]
-    if len(parts) >= 2:
-        return f"{parts[-2]}/{parts[-1]}"
-    return None
+    if any(ord(char) < 33 or ord(char) == 127 for char in text) or "\\" in text:
+        return None
+    scp = re.fullmatch(r"git@github\.com:(.+)", text, re.IGNORECASE)
+    if scp:
+        path = scp.group(1)
+    else:
+        try:
+            parsed = urlsplit(text)
+            default_port = {"https": 443, "ssh": 22}.get(parsed.scheme)
+            if (default_port is None or parsed.hostname != "github.com"
+                    or parsed.port not in (None, default_port) or parsed.query or parsed.fragment):
+                return None
+            if parsed.scheme == "ssh" and (parsed.username != "git" or parsed.password is not None):
+                return None
+            path = parsed.path.removeprefix("/")
+        except ValueError:
+            return None
+    path = path.removesuffix("/").removesuffix(".git")
+    return path if REMOTE_PATTERN.fullmatch(path) else None
 
 
 def checkout_identity(path: str | Path, expected_remote: str) -> tuple[str | None, str]:
@@ -87,7 +97,7 @@ def checkout_identity(path: str | Path, expected_remote: str) -> tuple[str | Non
         return None, f"origin has no remote URL at {path}"
     actual = _parse_remote_id(completed.stdout.decode("utf-8", "replace"))
     if actual is None or actual.lower() != expected_remote.lower():
-        found = actual if actual is not None else completed.stdout.decode("utf-8", "replace").strip()
+        found = actual if actual is not None else "unsupported origin URL"
         return None, f"origin is not {expected_remote} (found {found})"
     return expected_remote, ""
 
