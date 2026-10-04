@@ -3,7 +3,7 @@
 Standard library only. Read-only against git (``ls-files``, ``log``, ``for-each-ref``); it never fetches, writes or
 checks out anything.
 
-    python scripts/check_public.py                  scan every tracked file (and tracked file name)
+    python scripts/check_public.py                  scan tracked text files and every tracked file name
     python scripts/check_public.py --history        scan ``git log -p --all`` text and ref names instead
     python scripts/check_public.py --terms FILE     read the private terms from FILE, not .public-scan.local
 
