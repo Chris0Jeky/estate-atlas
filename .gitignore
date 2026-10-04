@@ -5,3 +5,5 @@ build/
 dist/
 *.egg-info/
 .public-scan.local
+_site_src/
+_site/
