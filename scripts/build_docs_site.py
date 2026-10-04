@@ -6,8 +6,9 @@ Standard library only, deterministic, read-only against everything except ``--ou
 
 Copies an explicit allowlist of existing docs into a folder that GitHub's own Jekyll
 (``actions/jekyll-build-pages``) turns into a site: ``README.md`` becomes ``index.md``, three design
-docs keep their ``docs/`` paths, ``LICENSE`` becomes ``LICENSE.txt``. It adds a navigation line and a
-title to every page, and does all link conversion itself (the Jekyll relative-links plugin is switched
+docs keep their ``docs/`` paths, ``LICENSE`` becomes ``LICENSE.txt``. The look comes from a small theme
+in ``scripts/docs_site`` (a layout and one stylesheet whose brand tokens sit in one block); the script writes
+the sidebar and top navigation as ``_data/docs_nav.yml`` and gives every page a title, and does all link conversion itself (the Jekyll relative-links plugin is switched
 off): a link to a published page points at the page's rendered ``.html`` file, relative to the linking
 page, and a link to a file that is not published points at the file on GitHub. Links inside code (fenced
 blocks of any fence length, indented blocks, code spans of any backtick length) are never touched. It
@@ -61,6 +62,14 @@ NAV = (
     ("Example atlas", EXAMPLE_PAGE),
 )
 PLUGINS = ("jekyll-optional-front-matter", "jekyll-titles-from-headings", "jekyll-default-layout")
+# The theme: copied as-is from scripts/docs_site into the staged site (checked like every other input).
+THEME_DIR = "scripts/docs_site"
+THEME_FILES = ("_layouts/default.html", "assets/css/docs.css")
+NAV_DATA = "_data/docs_nav.yml"
+REPO_URL = "https://github.com/Chris0Jeky/estate-atlas"
+SITE_LICENSE = "GPL-3.0-only"
+# Repository path each staged page comes from, for the "Edit this page" link.
+SOURCE_OF = {dest: src for src, dest in PAGES}
 
 LINK = re.compile(r'\[([^\]]*)\]\(([^)\s]+)((?:\s+"[^"]*")?)\)')
 REF_DEF = re.compile(r"^( {0,3}\[[^\]\n]+\]:[ \t]*)(<[^>\n]*>|\S+)(.*)$")
@@ -337,9 +346,25 @@ def _demote_headings(text: str) -> str:
     return "\n".join(line if code or not line.startswith("#") else "#" + line for line, code in _classify(text))
 
 
-def _nav(page: str) -> str:
-    here = posixpath.dirname(page) or "."
-    return " · ".join("[%s](%s)" % (label, posixpath.relpath(_published(target), here)) for label, target in NAV)
+def _url(staged_path: str) -> str:
+    """The site-relative URL Jekyll gives a staged page (``page.url``)."""
+    return "/" if staged_path == "index.md" else "/" + _published(staged_path)
+
+
+def _nav_data(tagline: str) -> str:
+    """``_data/docs_nav.yml`` for the layout: brand, top navigation and the sidebar groups. JSON strings are YAML."""
+    item = lambda label, target: "{title: %s, url: %s}" % (json.dumps(label), json.dumps(_url(target)))
+    lines = [
+        "title: estate-atlas",
+        "tagline: " + json.dumps(tagline, ensure_ascii=False),
+        "repo: " + json.dumps(REPO_URL),
+        "license: " + json.dumps(SITE_LICENSE),
+        "top:",
+    ]
+    lines += ["  - " + item(label, target) for label, target in NAV]
+    lines += ["groups:", "  - title: Documentation", "    pages:"]
+    lines += ["      - " + item(label, target) for label, target in NAV]
+    return "\n".join(lines) + "\n"
 
 
 def _liquid_safe(body: str) -> str:
@@ -350,9 +375,12 @@ def _liquid_safe(body: str) -> str:
 
 
 def _page(dest: str, title: str, body: str) -> str:
-    """Front matter, navigation and the body, which Liquid must not interpret."""
-    return "---\ntitle: %s\n---\n\n%s\n\n{%% raw %%}\n%s\n{%% endraw %%}\n" % (
-        json.dumps(title, ensure_ascii=False), _nav(dest), _liquid_safe(body.strip("\n")))
+    """Front matter and the body, which Liquid must not interpret. Navigation comes from the layout."""
+    matter = ["title: " + json.dumps(title, ensure_ascii=False), "layout: default"]
+    if dest in SOURCE_OF:
+        matter.append("source_path: " + json.dumps(SOURCE_OF[dest]))
+    return "---\n%s\n---\n\n{%% raw %%}\n%s\n{%% endraw %%}\n" % (
+        "\n".join(matter), _liquid_safe(body.strip("\n")))
 
 
 def _tagline(readme: str) -> str:
@@ -368,7 +396,7 @@ def _config(description: str) -> str:
         "description: " + _scalar(description),
         "url: https://chris0jeky.github.io",
         "baseurl: /estate-atlas",
-        "theme: jekyll-theme-primer",
+        "theme: null",
         "plugins:",
     ]
     lines += ["  - " + plugin for plugin in PLUGINS]
@@ -453,8 +481,10 @@ def build(root: Path, out: Path) -> None:
     staged = dict(PAGES)
     staged[LICENSE[0]] = LICENSE[1]
     # Check and read every input before touching ``out``, so a failure leaves nothing half built.
-    for rel in [src for src, _ in PAGES] + [LICENSE[0], EXAMPLE_ATLAS]:
+    theme = [posixpath.join(THEME_DIR, name) for name in THEME_FILES]
+    for rel in [src for src, _ in PAGES] + [LICENSE[0], EXAMPLE_ATLAS] + theme:
         _check_input(root, rel)
+    theme_files = {name: _text(root / THEME_DIR / name) for name in THEME_FILES}
     sources = {src: _text(root / src) for src, _ in PAGES}
     license_text = _text(root / LICENSE[0])
     description = _tagline(sources["README.md"])
@@ -462,6 +492,9 @@ def build(root: Path, out: Path) -> None:
     try:
         _write(out / MARKER, MARKER_TEXT)
         _write(out / "_config.yml", _config(description))
+        _write(out / NAV_DATA, _nav_data(description))
+        for name, text in theme_files.items():
+            _write(out / name, text)
         for src, dest in PAGES:
             body = rewrite_links(sources[src], src, staged)
             _write(out / dest, _page(dest, _first_heading(body, dest), body))

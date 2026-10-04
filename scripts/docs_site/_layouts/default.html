@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {%- assign nav = site.data.docs_nav -%}
+  <title>{% if page.title and page.url != "/" %}{{ page.title | escape }} · {% endif %}{{ nav.title | escape }}</title>
+  <meta name="description" content="{{ page.description | default: nav.tagline | escape }}">
+  <link rel="stylesheet" href="{{ '/assets/css/docs.css' | relative_url }}">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="{{ '/' | relative_url }}"><span class="mark" aria-hidden="true"></span>{{ nav.title | escape }}</a>
+      <nav class="topnav" aria-label="Main">
+        {%- for item in nav.top %}
+        <a href="{{ item.url | relative_url | escape }}"{% if page.url == item.url %} aria-current="page"{% endif %}>{{ item.title | escape }}</a>
+        {%- endfor %}
+      </nav>
+      <span class="spacer"></span>
+      <a class="gh" href="{{ nav.repo | escape }}">GitHub</a>
+      <details class="mnav">
+        <summary>Menu</summary>
+        <div class="mnav-panel">
+          {%- for group in nav.groups %}
+          <p class="mnav-group">{{ group.title | escape }}</p>
+          {%- for item in group.pages %}
+          <a href="{{ item.url | relative_url | escape }}"{% if page.url == item.url %} aria-current="page"{% endif %}>{{ item.title | escape }}</a>
+          {%- endfor %}
+          {%- endfor %}
+        </div>
+      </details>
+    </div>
+  </header>
+
+  <div class="shell">
+    <nav class="side" aria-label="Documents">
+      {%- for group in nav.groups %}
+      {%- assign open = false -%}
+      {%- for item in group.pages %}{% if page.url == item.url %}{% assign open = true %}{% endif %}{% endfor -%}
+      <details{% if open or forloop.first or nav.groups.size < 3 %} open{% endif %}>
+        <summary>{{ group.title | escape }}</summary>
+        {%- for item in group.pages %}
+        <a href="{{ item.url | relative_url | escape }}"{% if page.url == item.url %} aria-current="page"{% endif %}>{{ item.title | escape }}</a>
+        {%- endfor %}
+      </details>
+      {%- endfor %}
+    </nav>
+
+    <main id="content" class="doc">
+      {{ content }}
+    </main>
+
+    <aside class="toc" aria-label="On this page" hidden>
+      <p class="toc-title">On this page</p>
+      <ol id="toc-list"></ol>
+    </aside>
+  </div>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <span>{{ nav.title | escape }} · {{ nav.license | escape }}</span>
+      <a href="{{ nav.repo | escape }}">Source on GitHub</a>
+      <span class="spacer"></span>
+      {%- if page.source_path %}
+      <a href="{{ nav.repo | escape }}/blob/main/{{ page.source_path | escape }}">Edit this page</a>
+      {%- endif %}
+    </div>
+  </footer>
+
+  <script>
+    (function () {
+      var doc = document.getElementById('content');
+      var list = document.getElementById('toc-list');
+      if (!doc || !list) return;
+      var heads = doc.querySelectorAll('h2[id]');
+      if (heads.length < 2) return;
+      heads.forEach(function (h) {
+        var li = document.createElement('li');
+        var a = document.createElement('a');
+        a.href = '#' + h.id;
+        a.textContent = h.textContent;
+        li.appendChild(a);
+        list.appendChild(li);
+      });
+      list.parentNode.hidden = false;
+    })();
+  </script>
+</body>
+</html>

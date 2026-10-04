@@ -36,6 +36,7 @@ def make_root(parent: Path) -> Path:
     shutil.copytree(ROOT / "docs", root / "docs")
     shutil.copytree(ROOT / "examples" / "shop", root / "examples" / "shop")
     shutil.copytree(ROOT / "examples" / "workspace", root / "examples" / "workspace")
+    shutil.copytree(ROOT / "scripts" / "docs_site", root / "scripts" / "docs_site")
     return root
 
 
@@ -58,31 +59,45 @@ class BuildDocsSiteTest(unittest.TestCase):
         return {str(p.relative_to(self.out)): p.read_bytes()
                 for p in sorted(self.out.rglob("*")) if p.is_file()}
 
-    def test_index_has_nav_and_front_matter(self) -> None:
+    def test_index_has_front_matter_and_no_inline_nav(self) -> None:
         self.build()
         index = self.read("index.md")
         self.assertTrue(index.startswith("---\ntitle: "))
-        self.assertIn("[Home](index.html)", index)
-        self.assertIn("[Design](docs/DESIGN.html)", index)
-        self.assertIn("[Qualification](docs/QUALIFICATION.html)", index)
-        self.assertIn("[Origin identity](docs/ORIGIN_IDENTITY.html)", index)
-        self.assertIn("[Example atlas](example.html)", index)
+        self.assertIn("\nlayout: default\n", index)
+        self.assertIn('\nsource_path: "README.md"\n', index)
+        self.assertNotIn("[Home](index.html)", index)  # navigation now comes from the layout
         self.assertIn("**Your architecture as checked data.**", index)
         self.assertNotIn("\r", index)
 
-    def test_nav_in_docs_pages_uses_parent_links(self) -> None:
+    def test_nav_data_lists_every_page_with_its_jekyll_url(self) -> None:
         self.build()
-        design = self.read("docs/DESIGN.md")
-        self.assertIn("[Home](../index.html)", design)
-        self.assertIn("[Example atlas](../example.html)", design)
-        self.assertIn("[Design](DESIGN.html)", design)
+        nav = self.read("_data/docs_nav.yml")
+        self.assertIn('repo: "https://github.com/Chris0Jeky/estate-atlas"', nav)
+        for label, url in (("Home", "/"), ("Design", "/docs/DESIGN.html"), ("Qualification", "/docs/QUALIFICATION.html"),
+                           ("Origin identity", "/docs/ORIGIN_IDENTITY.html"), ("Example atlas", "/example.html")):
+            self.assertIn('{title: "%s", url: "%s"}' % (label, url), nav)
+        self.assertIn("groups:\n  - title: Documentation\n    pages:\n", nav)
+
+    def test_theme_files_are_staged(self) -> None:
+        self.build()
+        layout = self.read("_layouts/default.html")
+        self.assertIn("site.data.docs_nav", layout)
+        self.assertIn("{{ content }}", layout)
+        self.assertEqual(layout.count("{%- for") + layout.count("{% for"), layout.count("{%- endfor") + layout.count("{% endfor"))
+        self.assertEqual(layout.count("{% if") + layout.count("{%- if"), layout.count("{% endif") + layout.count("{%- endif"))
+        self.assertNotIn("{{ page.title }}", layout)  # titles come from document headings: always escaped
+        self.assertIn("--accent:", self.read("assets/css/docs.css"))
+
+    def test_example_page_has_no_edit_link_source(self) -> None:
+        self.build()
+        self.assertNotIn("source_path", self.read("example.md"))
 
     def test_config(self) -> None:
         self.build()
         config = self.read("_config.yml")
         self.assertIn("title: estate-atlas", config)
         self.assertIn("description: Your architecture as checked data.", config)
-        self.assertIn("theme: jekyll-theme-primer", config)
+        self.assertIn("theme: null", config)  # the site's own layout and stylesheet replace the stock theme
         for plugin in ("jekyll-optional-front-matter", "jekyll-titles-from-headings", "jekyll-default-layout"):
             self.assertIn("  - " + plugin, config)
         # All link conversion happens in the staging script. The Jekyll plugin is on by default on GitHub Pages,
@@ -517,7 +532,7 @@ class BuildDocsSiteTest(unittest.TestCase):
         for page in sorted(self.out.rglob("*.md")):
             text = page.read_text(encoding="utf-8")
             cut = text.index("\n\n{% raw %}\n") + 2
-            body = text[:cut] + self.liquid(text[cut:])  # the navigation line, then the page as Jekyll emits it
+            body = self.liquid(text[cut:])  # the page as Jekyll emits it (navigation lives in the layout)
             body = re.sub(r"^ {0,3}(`{3,}|~{3,}).*?^ {0,3}\1[`~]*[ \t]*$", "", body, flags=re.S | re.M)
             body = re.sub(r"`[^`\n]*`", "", body)
             for target in re.findall(r"\]\(([^)\s]+)", body):
@@ -530,7 +545,13 @@ class BuildDocsSiteTest(unittest.TestCase):
                     resolved = resolved.with_suffix(".md")  # Jekyll renders each staged .md page to .html
                 self.assertTrue(resolved.is_file(), "%s links to %s, which is not staged" % (page.name, target))
                 checked += 1
-        self.assertGreater(checked, 25)
+        self.assertGreater(checked, 3)  # body links only: the navigation lives in the layout now
+        # Every navigation URL the layout renders must be a page Jekyll will produce.
+        for url in re.findall(r'url: "([^"]+)"', self.read("_data/docs_nav.yml")):
+            rel = "index.md" if url == "/" else url.lstrip("/")
+            if rel.endswith(".html"):
+                rel = rel[:-5] + ".md"
+            self.assertTrue((self.out / rel).is_file(), "navigation points at %s, which is not staged" % url)
 
     def test_workflow_runs_the_tests_and_watches_their_inputs(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
