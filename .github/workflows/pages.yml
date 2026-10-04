@@ -12,6 +12,7 @@ on:
       - examples/**
       - estate_atlas/**
       - scripts/build_docs_site.py
+      - scripts/docs_site/**
       - tests/test_build_docs_site.py
       - .github/workflows/pages.yml
   pull_request:
@@ -22,6 +23,7 @@ on:
       - examples/**
       - estate_atlas/**
       - scripts/build_docs_site.py
+      - scripts/docs_site/**
       - tests/test_build_docs_site.py
       - .github/workflows/pages.yml
   workflow_dispatch:
