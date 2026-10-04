@@ -153,6 +153,64 @@ class BuildDocsSiteTest(unittest.TestCase):
         self.assertIn("QUALIFICATION.md", err.getvalue())
         self.assertFalse(self.out.exists())
 
+    def symlink(self, link: Path, target: Path, directory: bool = False) -> None:
+        try:
+            os.symlink(target, link, target_is_directory=directory)
+        except (OSError, NotImplementedError) as err:
+            self.skipTest("cannot create symlinks here: %s" % err)
+
+    def test_rejects_symlinked_allowlisted_doc(self) -> None:
+        secret = self.root / "secret.txt"
+        secret.write_text("do not publish", encoding="utf-8")
+        for rel in ("docs/DESIGN.md", "LICENSE", "examples/shop/atlas.json"):
+            with self.subTest(rel=rel):
+                path = self.root / rel
+                original = path.read_bytes()
+                path.unlink()
+                self.symlink(path, secret)
+                self.out.mkdir(exist_ok=True)
+                (self.out / self.module.MARKER).write_text("x", encoding="utf-8")
+                (self.out / "keep.txt").write_text("keep", encoding="utf-8")
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    code = self.module.main(["--root", str(self.root), "--out", str(self.out)])
+                self.assertEqual(code, 1)
+                self.assertIn("symlink", err.getvalue())
+                self.assertTrue((self.out / "keep.txt").is_file())  # existing output untouched
+                self.assertFalse(any("do not publish" in p.read_text(encoding="utf-8", errors="ignore")
+                                     for p in self.out.rglob("*") if p.is_file()))
+                path.unlink()
+                path.write_bytes(original)
+
+    def test_rejects_symlinked_parent_dir(self) -> None:
+        real = self.root / "docs_real"
+        (self.root / "docs").rename(real)
+        self.symlink(self.root / "docs", real, directory=True)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = self.module.main(["--root", str(self.root), "--out", str(self.out)])
+        self.assertEqual(code, 1)
+        self.assertIn("symlink", err.getvalue())
+        self.assertFalse(self.out.exists())
+
+    def test_symlink_check_runs_on_every_component(self) -> None:
+        """The same rejection without needing OS symlink support: report one component as a link."""
+        from unittest import mock
+        real = Path.is_symlink
+        for flagged in ("DESIGN.md", "docs", "atlas.json", "LICENSE"):
+            with self.subTest(flagged=flagged):
+                self.out.mkdir(exist_ok=True)
+                (self.out / self.module.MARKER).write_text("x", encoding="utf-8")
+                (self.out / "keep.txt").write_text("keep", encoding="utf-8")
+                with mock.patch.object(Path, "is_symlink",
+                                       lambda self_, f=flagged: self_.name == f or real(self_)):
+                    err = io.StringIO()
+                    with contextlib.redirect_stderr(err):
+                        code = self.module.main(["--root", str(self.root), "--out", str(self.out)])
+                self.assertEqual(code, 1)
+                self.assertIn("symlink", err.getvalue())
+                self.assertTrue((self.out / "keep.txt").is_file())
+
     def test_refuses_unsafe_out_paths(self) -> None:
         (self.root / ".git").mkdir()
         for bad in (self.root, self.root / "docs", self.root.parent, self.root / ".git", self.root / ".git" / "x"):

@@ -74,6 +74,30 @@ def _text(path: Path) -> str:
     return raw.decode("utf-8").lstrip("﻿").replace("\r\n", "\n").replace("\r", "\n")
 
 
+def _check_input(root: Path, rel: str) -> None:
+    """Refuse an input that is missing, not a regular file, or reaches outside the allowlist by a link.
+
+    Neither the file nor any folder between the repository root and it may be a symlink (or a junction), and
+    the resolved path must stay inside the root and out of ``.git``.
+    """
+    if not os.path.lexists(root / rel):
+        raise SiteError("allowlisted file missing: %s" % rel)
+    current = root
+    for part in Path(rel).parts:
+        current = current / part
+        if current.is_symlink() or (hasattr(current, "is_junction") and current.is_junction()):
+            raise SiteError("allowlisted input is, or sits under, a symlink: %s" % rel)
+    resolved = (root / rel).resolve()
+    try:
+        inside = resolved.relative_to(root.resolve())
+    except ValueError:
+        raise SiteError("allowlisted input resolves outside the repository: %s" % rel) from None
+    if ".git" in inside.parts:
+        raise SiteError("allowlisted input resolves inside .git: %s" % rel)
+    if not resolved.is_file():
+        raise SiteError("allowlisted input is not a regular file: %s" % rel)
+
+
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(text.encode("utf-8"))
@@ -241,12 +265,12 @@ def build(root: Path, out: Path) -> None:
     root = Path(root)
     staged = dict(PAGES)
     staged[LICENSE[0]] = LICENSE[1]
-    # Read and check every input before touching ``out``, so a failure leaves nothing half built.
+    # Check and read every input before touching ``out``, so a failure leaves nothing half built.
+    for rel in [src for src, _ in PAGES] + [LICENSE[0], EXAMPLE_ATLAS]:
+        _check_input(root, rel)
     sources = {src: _text(root / src) for src, _ in PAGES}
     license_text = _text(root / LICENSE[0])
     description = _tagline(sources["README.md"])
-    if not (root / EXAMPLE_ATLAS).is_file():
-        raise SiteError("allowlisted file missing: %s" % EXAMPLE_ATLAS)
     out = _prepare_out(root, Path(out))
     try:
         _write(out / MARKER, "staged by scripts/build_docs_site.py\n")
