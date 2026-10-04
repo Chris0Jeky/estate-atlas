@@ -25,6 +25,8 @@ python -m estate_atlas tour examples/shop/atlas.json --md --overlay tests/fixtur
 
 Design: [docs/DESIGN.md](docs/DESIGN.md).
 
+Docs site: https://chris0jeky.github.io/estate-atlas/
+
 Consumer proof and its limits: [docs/QUALIFICATION.md](docs/QUALIFICATION.md).
 
 ## Public check
