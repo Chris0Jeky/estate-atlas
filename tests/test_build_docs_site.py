@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import os
 import shutil
 import tempfile
 import unittest
@@ -126,6 +127,15 @@ class BuildDocsSiteTest(unittest.TestCase):
         self.assertIn(chr(10) + "# Example atlas: a fictional shop" + chr(10), page)
         self.assertIn(chr(10) + "## A tour of the estate" + chr(10), page)  # tour sits below the page h1
         self.assertIn(chr(10) + "#### Storefront" + chr(10), page)
+
+    @unittest.skipIf(os.name == "nt", "POSIX file modes only")
+    def test_staged_files_are_world_readable(self) -> None:
+        import stat
+        self.build()
+        for path in sorted(self.out.rglob("*")):
+            mode = stat.S_IMODE(path.stat().st_mode)
+            want = 0o755 if path.is_dir() else 0o644
+            self.assertEqual(mode, want, "%s is %o" % (path.relative_to(self.out), mode))
 
     def test_two_builds_are_byte_identical(self) -> None:
         self.build()

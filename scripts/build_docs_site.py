@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import posixpath
 import re
 import shutil
@@ -227,6 +228,14 @@ def _prepare_out(root: Path, out: Path) -> Path:
     return out
 
 
+def _normalise_modes(out: Path) -> None:
+    """Make every staged folder 0755 and file 0644: the renderer writes through a 0600 temp file, and Jekyll
+    copies static files with the mode they have, which the Pages artifact step then cannot read."""
+    os.chmod(out, 0o755)
+    for path in sorted(out.rglob("*")):
+        os.chmod(path, 0o755 if path.is_dir() else 0o644)
+
+
 def build(root: Path, out: Path) -> None:
     """Stage the site from the repository at ``root`` into ``out`` (replaced)."""
     root = Path(root)
@@ -248,6 +257,7 @@ def build(root: Path, out: Path) -> None:
         _write(out / LICENSE[1], license_text)
         example = _example(root, out)
         _write(out / EXAMPLE_PAGE, _page(EXAMPLE_PAGE, _first_heading(example, "Example atlas"), example))
+        _normalise_modes(out)
     except BaseException:
         shutil.rmtree(out, ignore_errors=True)
         raise
