@@ -83,6 +83,9 @@ class BuildDocsSiteTest(unittest.TestCase):
         layout = self.read("_layouts/default.html")
         self.assertIn("site.data.docs_nav", layout)
         self.assertIn("{{ content }}", layout)
+        self.assertEqual(layout.count("{%- for") + layout.count("{% for"), layout.count("{%- endfor") + layout.count("{% endfor"))
+        self.assertEqual(layout.count("{% if") + layout.count("{%- if"), layout.count("{% endif") + layout.count("{%- endif"))
+        self.assertNotIn("{{ page.title }}", layout)  # titles come from document headings: always escaped
         self.assertIn("--accent:", self.read("assets/css/docs.css"))
 
     def test_example_page_has_no_edit_link_source(self) -> None:
@@ -94,7 +97,7 @@ class BuildDocsSiteTest(unittest.TestCase):
         config = self.read("_config.yml")
         self.assertIn("title: estate-atlas", config)
         self.assertIn("description: Your architecture as checked data.", config)
-        self.assertNotIn("theme:", config)  # the site's own layout and stylesheet replace the stock theme
+        self.assertIn("theme: null", config)  # the site's own layout and stylesheet replace the stock theme
         for plugin in ("jekyll-optional-front-matter", "jekyll-titles-from-headings", "jekyll-default-layout"):
             self.assertIn("  - " + plugin, config)
         # All link conversion happens in the staging script. The Jekyll plugin is on by default on GitHub Pages,

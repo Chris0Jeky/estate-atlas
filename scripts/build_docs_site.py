@@ -396,6 +396,7 @@ def _config(description: str) -> str:
         "description: " + _scalar(description),
         "url: https://chris0jeky.github.io",
         "baseurl: /estate-atlas",
+        "theme: null",
         "plugins:",
     ]
     lines += ["  - " + plugin for plugin in PLUGINS]
