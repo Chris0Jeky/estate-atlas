@@ -1,24 +1,28 @@
 name: Docs site
 
-# Builds the docs site from the existing docs (scripts/build_docs_site.py stages them, GitHub's Jekyll
-# renders them). Pull requests build only; a push to main also deploys to GitHub Pages.
+# Builds the docs site from the existing docs (scripts/build_docs_site.py stages them after its unit tests
+# pass, GitHub's Jekyll renders them). Pull requests build only; a push to main also deploys to GitHub Pages.
 on:
   push:
     branches: [main]
     paths:
       - README.md
+      - LICENSE
       - docs/**
       - examples/**
       - estate_atlas/**
       - scripts/build_docs_site.py
+      - tests/test_build_docs_site.py
       - .github/workflows/pages.yml
   pull_request:
     paths:
       - README.md
+      - LICENSE
       - docs/**
       - examples/**
       - estate_atlas/**
       - scripts/build_docs_site.py
+      - tests/test_build_docs_site.py
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -40,6 +44,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
+      - name: Test the staging script
+        run: python -m unittest discover -s tests -p test_build_docs_site.py -v
       - name: Stage the site sources
         run: python scripts/build_docs_site.py --out _site_src
       - name: Configure Pages

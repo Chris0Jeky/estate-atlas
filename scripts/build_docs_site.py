@@ -7,12 +7,16 @@ Standard library only, deterministic, read-only against everything except ``--ou
 Copies an explicit allowlist of existing docs into a folder that GitHub's own Jekyll
 (``actions/jekyll-build-pages``) turns into a site: ``README.md`` becomes ``index.md``, three design
 docs keep their ``docs/`` paths, ``LICENSE`` becomes ``LICENSE.txt``. It adds a navigation line and a
-title to every page, points links to files that are not published at the file on GitHub, and renders
-the fictional ``examples/shop`` atlas with the package's own HTML renderer and tour, so the demo is
-the real output. A missing allowlisted file is an error (exit 1), never a silently thinner site.
+title to every page, and does all link conversion itself (the Jekyll relative-links plugin is switched
+off): a link to a published page points at the page's rendered ``.html`` file, relative to the linking
+page, and a link to a file that is not published points at the file on GitHub. Links inside code (fenced
+blocks of any fence length, indented blocks, code spans of any backtick length) are never touched. It
+renders the fictional ``examples/shop`` atlas with the package's own HTML renderer and tour, so the demo
+is the real output. A missing allowlisted file is an error (exit 1), never a silently thinner site.
 
 ``--out`` must lie strictly inside the repository root and is replaced wholesale, so it must be absent,
-empty or a folder this script made (it carries a ``.docs-site-stage`` marker); anything else is refused.
+empty or a folder this script made: one holding a ``.docs-site-stage`` marker that is a regular file
+with the exact text this script writes. Anything else is refused.
 """
 from __future__ import annotations
 
@@ -22,6 +26,7 @@ import os
 import posixpath
 import re
 import shutil
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -32,6 +37,10 @@ sys.path.insert(0, str(ROOT))
 
 REPO_BLOB = "https://github.com/Chris0Jeky/estate-atlas/blob/main/"
 MARKER = ".docs-site-stage"
+MARKER_TEXT = "staged by scripts/build_docs_site.py\n"
+# Windows marks a junction (and a symlink, and a cloud placeholder) with this file attribute. ``Path.is_junction``
+# only exists from Python 3.12, so the attribute is read from ``os.lstat`` directly.
+REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 EXAMPLE_ATLAS = "examples/shop/atlas.json"
 EXAMPLE_HTML = "example/shop-atlas.html"
 EXAMPLE_PAGE = "example.md"
@@ -51,13 +60,18 @@ NAV = (
     ("Origin identity", "docs/ORIGIN_IDENTITY.md"),
     ("Example atlas", EXAMPLE_PAGE),
 )
-PLUGINS = ("jekyll-relative-links", "jekyll-optional-front-matter",
-           "jekyll-titles-from-headings", "jekyll-default-layout")
+PLUGINS = ("jekyll-optional-front-matter", "jekyll-titles-from-headings", "jekyll-default-layout")
 
 LINK = re.compile(r'\[([^\]]*)\]\(([^)\s]+)((?:\s+"[^"]*")?)\)')
+REF_DEF = re.compile(r"^( {0,3}\[[^\]\n]+\]:[ \t]*)(<[^>\n]*>|\S+)(.*)$")
 SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
-CODE_SPAN = re.compile(r"(`+[^`\n]*`+)")
-FENCE = re.compile(r"^\s*(```|~~~)")
+QUOTE = re.compile(r"^ {0,3}> ?")
+FENCE_OPEN = re.compile(r"^( *)(`{3,}|~{3,})(.*)$")
+ATX = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)")
+THEMATIC = re.compile(r"^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
+LIST_MARKER = re.compile(r"^( *)([-+*]|\d{1,9}[.)])(?:( +)(?=\S)| *$)")
+LIQUID_OPENER = re.compile(r"\{(?=[{%])")
+MASK = "\x00"
 PLAIN_YAML = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ,.()-]*$")
 
 
@@ -74,19 +88,29 @@ def _text(path: Path) -> str:
     return raw.decode("utf-8").lstrip("﻿").replace("\r\n", "\n").replace("\r", "\n")
 
 
+def _is_link(path: Path) -> bool:
+    """A symlink, or on Windows any reparse point: a junction is one, and Python 3.11 cannot name it otherwise."""
+    if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+        return True
+    try:
+        return bool(getattr(os.lstat(path), "st_file_attributes", 0) & REPARSE_POINT)
+    except OSError:
+        return False
+
+
 def _check_input(root: Path, rel: str) -> None:
     """Refuse an input that is missing, not a regular file, or reaches outside the allowlist by a link.
 
-    Neither the file nor any folder between the repository root and it may be a symlink (or a junction), and
-    the resolved path must stay inside the root and out of ``.git``.
+    Neither the file nor any folder between the repository root and it may be a symlink or a junction (any
+    Windows reparse point), and the resolved path must stay inside the root and out of ``.git``.
     """
     if not os.path.lexists(root / rel):
         raise SiteError("allowlisted file missing: %s" % rel)
     current = root
     for part in Path(rel).parts:
         current = current / part
-        if current.is_symlink() or (hasattr(current, "is_junction") and current.is_junction()):
-            raise SiteError("allowlisted input is, or sits under, a symlink: %s" % rel)
+        if _is_link(current):
+            raise SiteError("allowlisted input is, or sits under, a symlink or junction: %s" % rel)
     resolved = (root / rel).resolve()
     try:
         inside = resolved.relative_to(root.resolve())
@@ -107,78 +131,228 @@ def _scalar(value: str) -> str:
     return value if PLAIN_YAML.match(value) else json.dumps(value, ensure_ascii=False)
 
 
-def _lines_with_fence_state(text: str):
-    """Yield (line, in_fence) for each line; the fence delimiter lines themselves count as fenced."""
-    fence = None
-    for line in text.split("\n"):
-        match = FENCE.match(line)
-        if fence is None:
-            if match:
-                fence = match.group(1)
-                yield line, True
+def _unquote(line: str) -> tuple[int, str]:
+    """The blockquote depth of ``line`` and what is left of it after the ``>`` markers."""
+    depth = 0
+    while True:
+        match = QUOTE.match(line)
+        if not match:
+            return depth, line
+        depth += 1
+        line = line[match.end():]
+
+
+def _classify(text: str) -> list[tuple[str, bool]]:
+    """``(line, is_code)`` for each line of ``text``: fenced code (the delimiter lines included) and indented code.
+
+    A fence closes on a line of the same character, at least as long as the opener, with nothing after it;
+    one that never closes runs to the end, as in CommonMark. Indented code is four columns past the enclosing
+    list item (or the margin), after a blank line or a non-paragraph block; it cannot interrupt a paragraph, and a
+    list item's own continuation paragraph is not code. Blockquote markers are looked through.
+    """
+    result: list[tuple[str, bool]] = []
+    fence = None  # (character, length, base column, blockquote depth)
+    containers: list[int] = []  # content column of each open list item
+    open_depth = 0
+    in_paragraph = False
+    for raw in text.split("\n"):
+        depth, body = _unquote(raw.expandtabs(4))
+        blank = not body.strip()
+        indent = len(body) - len(body.lstrip(" "))
+        if fence is not None:
+            char, length, base, fence_depth = fence
+            if depth >= fence_depth and (blank or indent >= base):
+                if indent - base <= 3 and re.fullmatch(re.escape(char) + "{%d,}" % length, body.strip()):
+                    fence = None
+                    in_paragraph = False
+                result.append((raw, True))
                 continue
-            yield line, False
-        else:
-            if match and match.group(1) == fence:
-                fence = None
-            yield line, True
+            fence = None  # its blockquote or list item ended without a closing line
+        if depth != open_depth:
+            containers, in_paragraph, open_depth = [], False, depth
+        if blank:
+            in_paragraph = False
+            result.append((raw, False))
+            continue
+        thematic = bool(THEMATIC.match(body))
+        marker = None if thematic else LIST_MARKER.match(body)
+        atx = bool(ATX.match(body))
+        opener = FENCE_OPEN.match(body)
+        starts_block = bool(marker or atx or thematic or opener)
+        while containers and indent < containers[-1] and not (in_paragraph and not starts_block):
+            containers.pop()
+        base = containers[-1] if containers else 0
+        relative = indent - base
+        if not in_paragraph and relative >= 4:
+            result.append((raw, True))  # indented code
+            continue
+        if marker:
+            spaces = len(marker.group(3) or "")
+            width = indent + len(marker.group(2))
+            gap = spaces if 1 <= spaces <= 4 else 1
+            containers.append(width + gap)
+            rest = body[width + gap:]
+            opener = FENCE_OPEN.match(rest)
+            rest_indent = len(rest) - len(rest.lstrip(" "))
+            if rest.strip() and rest_indent >= 4:
+                result.append((raw, True))  # code indented from the marker (five or more spaces after it)
+                in_paragraph = False
+                continue
+            base, relative = containers[-1], rest_indent
+            atx = bool(ATX.match(rest))
+            thematic = bool(THEMATIC.match(rest))
+            if not rest.strip():
+                in_paragraph = False
+                result.append((raw, False))
+                continue
+        if opener and relative <= 3 and not (in_paragraph and relative >= 4):
+            char, info = opener.group(2), opener.group(3)
+            if char[0] == "~" or "`" not in info:
+                fence = (char[0], len(char), base, depth)
+                in_paragraph = False
+                result.append((raw, True))
+                continue
+        in_paragraph = not (atx or thematic)
+        result.append((raw, False))
+    return result
+
+
+def _mask_code_spans(text: str) -> str:
+    """``text`` with every code span replaced by ``MASK`` characters of the same length (newlines kept).
+
+    A span opens at a run of backticks and closes at the next run of exactly the same length; a run with no
+    such closer is literal text, and a backslash-escaped backtick opens nothing.
+    """
+    out = list(text)
+    size = len(text)
+    i = 0
+    while i < size:
+        if text[i] == "\\":
+            i += 2
+            continue
+        if text[i] != "`":
+            i += 1
+            continue
+        j = i
+        while j < size and text[j] == "`":
+            j += 1
+        run, k, close = j - i, j, None
+        while k < size:
+            if text[k] != "`":
+                k += 1
+                continue
+            end = k
+            while end < size and text[end] == "`":
+                end += 1
+            if end - k == run:
+                close = end
+                break
+            k = end
+        if close is None:
+            i = j
+            continue
+        for index in range(i, close):
+            if text[index] != "\n":
+                out[index] = MASK
+        i = close
+    return "".join(out)
+
+
+def _published(staged_path: str) -> str:
+    """The path Jekyll renders a staged file to: a Markdown page becomes the ``.html`` file."""
+    return staged_path[:-3] + ".html" if staged_path.endswith(".md") else staged_path
 
 
 def rewrite_links(text: str, source: str, staged: dict[str, str]) -> str:
-    """Point every Markdown link at a published page or, failing that, at the file on GitHub.
+    """Point every Markdown link at the rendered page or, failing that, at the file on GitHub.
 
     ``source`` is the repository path of the page, ``staged`` maps published repository paths to staged
-    paths. External links, anchors, absolute paths and code (fenced or inline) are left alone.
+    paths. External links, anchors, absolute paths and code (fenced, indented or inline) are left alone.
+    Inline links and reference definitions are handled; staged Markdown pages are linked as their ``.html``.
     """
     base = posixpath.dirname(source)
     here = posixpath.dirname(staged[source])
 
-    def fix(match: re.Match) -> str:
-        label, target, title = match.groups()
+    def retarget(target: str) -> str | None:
         split = re.split(r"([#?])", target, maxsplit=1)
         path, suffix = split[0], "".join(split[1:])
         if not path or SCHEME.match(path) or path.startswith("/"):
-            return match.group(0)
+            return None
         resolved = posixpath.normpath(posixpath.join(base, path))
         if resolved in (".", "..") or resolved.startswith("../"):
-            return match.group(0)
+            return None
         if resolved in staged:
-            new = posixpath.relpath(staged[resolved], here or ".")
+            new = posixpath.relpath(_published(staged[resolved]), here or ".")
         else:
             new = REPO_BLOB + quote(resolved, safe="/") + ("/" if path.endswith("/") else "")
-        return "[%s](%s%s%s)" % (label, new, suffix, title)
+        return new + suffix
 
-    out = []
-    for line, fenced in _lines_with_fence_state(text):
-        if fenced or "](" not in line:
+    def paragraph(run: str) -> str:
+        lines, masked_lines = run.split("\n"), _mask_code_spans(run).split("\n")
+        for index, masked_line in enumerate(masked_lines):
+            match = REF_DEF.match(masked_line)
+            if match and MASK not in match.group(2):
+                target = match.group(2)
+                new = retarget(target[1:-1] if target.startswith("<") else target)
+                if new is not None:
+                    line = lines[index]
+                    lines[index] = line[:match.start(2)] + ("<%s>" % new if target.startswith("<") else new) \
+                        + line[match.end(2):]
+        run = "\n".join(lines)
+        masked = _mask_code_spans(run)
+        pieces, position = [], 0
+        for match in LINK.finditer(masked):
+            pieces.append(run[position:match.start()])
+            target, title = match.group(2), run[match.start(3):match.end(3)]
+            new = None if MASK in target + title else retarget(target)
+            pieces.append(run[match.start():match.end()] if new is None else
+                          "[%s](%s%s)" % (run[match.start(1):match.end(1)], new, title))
+            position = match.end()
+        pieces.append(run[position:])
+        return "".join(pieces)
+
+    out: list[str] = []
+    run: list[str] = []
+    for line, code in _classify(text):
+        if code or not line.strip():
+            if run:
+                out.extend(paragraph("\n".join(run)).split("\n"))
+                run = []
             out.append(line)
-            continue
-        parts = CODE_SPAN.split(line)
-        out.append("".join(p if i % 2 else LINK.sub(fix, p) for i, p in enumerate(parts)))
+        else:
+            run.append(line)
+    if run:
+        out.extend(paragraph("\n".join(run)).split("\n"))
     return "\n".join(out)
 
 
 def _first_heading(text: str, fallback: str) -> str:
-    for line, fenced in _lines_with_fence_state(text):
-        if not fenced and line.startswith("# "):
+    for line, code in _classify(text):
+        if not code and line.startswith("# "):
             return line[2:].strip()
     return fallback
 
 
 def _demote_headings(text: str) -> str:
-    return "\n".join(line if fenced or not line.startswith("#") else "#" + line
-                     for line, fenced in _lines_with_fence_state(text))
+    return "\n".join(line if code or not line.startswith("#") else "#" + line for line, code in _classify(text))
 
 
 def _nav(page: str) -> str:
     here = posixpath.dirname(page) or "."
-    return " · ".join("[%s](%s)" % (label, posixpath.relpath(target, here)) for label, target in NAV)
+    return " · ".join("[%s](%s)" % (label, posixpath.relpath(_published(target), here)) for label, target in NAV)
+
+
+def _liquid_safe(body: str) -> str:
+    """``body`` for the inside of a ``raw`` block. Liquid leaves ``raw`` at the first ``endraw`` tag it tokenises,
+    so each ``{`` that could begin a ``{{`` or ``{%`` is output as a string literal between a closed and a
+    reopened ``raw``: the block then holds no Liquid delimiter at all, whatever the document says."""
+    return LIQUID_OPENER.sub('{% endraw %}{{ "{" }}{% raw %}', body)
 
 
 def _page(dest: str, title: str, body: str) -> str:
     """Front matter, navigation and the body, which Liquid must not interpret."""
     return "---\ntitle: %s\n---\n\n%s\n\n{%% raw %%}\n%s\n{%% endraw %%}\n" % (
-        json.dumps(title, ensure_ascii=False), _nav(dest), body.strip("\n"))
+        json.dumps(title, ensure_ascii=False), _nav(dest), _liquid_safe(body.strip("\n")))
 
 
 def _tagline(readme: str) -> str:
@@ -198,7 +372,8 @@ def _config(description: str) -> str:
         "plugins:",
     ]
     lines += ["  - " + plugin for plugin in PLUGINS]
-    lines += ["relative_links:", "  enabled: true", "  collections: false", ""]
+    # The plugin is on by default on GitHub Pages: leaving it out of ``plugins`` would not stop it.
+    lines += ["relative_links:", "  enabled: false", ""]
     return "\n".join(lines)
 
 
@@ -233,6 +408,18 @@ def _example(root: Path, out: Path) -> str:
     ])
 
 
+def _is_stage_marker(marker: Path) -> bool:
+    """True when ``marker`` is a regular file (not a link) holding exactly the text this script writes."""
+    try:
+        info = os.lstat(marker)
+        if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & REPARSE_POINT:
+            return False
+        with open(marker, "rb") as handle:
+            return handle.read(len(MARKER_TEXT) + 1) == MARKER_TEXT.encode("utf-8")
+    except OSError:
+        return False
+
+
 def _prepare_out(root: Path, out: Path) -> Path:
     """Validate ``out`` and leave an empty folder; refuse anything that is not clearly ours to clear."""
     root, out = root.resolve(), out.resolve()
@@ -244,7 +431,7 @@ def _prepare_out(root: Path, out: Path) -> Path:
         if not out.is_dir():
             raise SiteError("--out exists and is not a folder: %s" % out)
         if any(out.iterdir()):
-            if not (out / MARKER).is_file():
+            if not _is_stage_marker(out / MARKER):
                 raise SiteError("--out is a non-empty folder this script did not create; "
                                 "refusing to clear it: %s" % out)
             shutil.rmtree(out)
@@ -273,7 +460,7 @@ def build(root: Path, out: Path) -> None:
     description = _tagline(sources["README.md"])
     out = _prepare_out(root, Path(out))
     try:
-        _write(out / MARKER, "staged by scripts/build_docs_site.py\n")
+        _write(out / MARKER, MARKER_TEXT)
         _write(out / "_config.yml", _config(description))
         for src, dest in PAGES:
             body = rewrite_links(sources[src], src, staged)
