@@ -27,6 +27,8 @@ It is standard-library Python (3.11+), with no dependencies, and is licensed GPL
 | `estate_atlas/cli.py` | `python -m estate_atlas <verb>` | the verbs `validate`, `check`, `export`, `render`, `docs`, `explain`, `tour` and `route` |
 | `estate_atlas/__main__.py` | the entry point | calls `cli.main()` |
 
+Note: these names are public surface kept for embedders: `model.TRAFFIC_KEYS` (the keys a traffic rule may carry), `traffic.BASES` and `traffic.REASONS` (the vocabulary of a routed record's basis and of an unrouted reason), `TrafficHistory.first_seen()` (each flow's earliest stored day) and `TrafficHistory.read_all()` (every stored day/flow row).
+
 ## 2. Format (`estate-atlas@3`)
 
 The format is atlas@3; atlas@2 is the same format without evidence levels (section 2.1):

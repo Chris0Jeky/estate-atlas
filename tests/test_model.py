@@ -316,6 +316,28 @@ class TrafficValidationTests(unittest.TestCase):
                                       {"source": "events", "verb": "ledger.*"}]
         model.validate(doc)
 
+    def test_traffic_keys_constant_matches_accepted_keys(self) -> None:
+        full = {"source": "journal", "producer": "web", "actor": "svc:alpha",
+                "subject": "svc:beta", "verb": "opened", "pulse": True}
+        self.assertEqual(set(full), model.TRAFFIC_KEYS)
+        model.validate(self.doc([full]))
+        for key in sorted(model.TRAFFIC_KEYS):
+            with self.subTest(key=key):
+                if key == "source":
+                    rule = {"source": "journal"}
+                elif key == "pulse":
+                    rule = {"source": "journal", "pulse": True}
+                elif key == "verb":
+                    rule = {"source": "journal", "verb": "opened"}
+                else:
+                    rule = {"source": "journal", key: "web"}
+                model.validate(self.doc([rule]))
+        with self.assertRaises(model.AtlasError) as caught:
+            model.validate(self.doc([{"source": "journal", "bogus": "x"}]))
+        self.assertIn("unknown key(s)", str(caught.exception))
+        self.assertIn("bogus", str(caught.exception))
+        self.assertEqual(model.TRAFFIC_KEYS, {"source"} | {"producer", "actor", "subject", "verb", "pulse"})
+
     def test_node_kinds_unclaimed_raises(self) -> None:
         doc = minimal()
         doc["components"][0]["instances"] = ["svc:*"]

@@ -319,6 +319,20 @@ class ProofCheckTests(CheckFixture):
                 self.assertFalse(check.partial_clone(self.alpha))
         config.write_text(original, encoding="utf-8")
 
+    def test_a_remote_name_with_a_space_is_read_whole(self) -> None:
+        config = self.alpha / ".git" / "config"
+        original = config.read_text(encoding="utf-8")
+        for name, extra, expected in (
+                ("spaced remote, promisor = false", '[remote "a b"]\n\tpromisor = false\n', False),
+                ("spaced remote, promisor = true", '[remote "a b"]\n\tpromisor = true\n', True),
+                ("spaced remote, filter", '[remote "a b"]\n\tpartialclonefilter = blob:none\n', True),
+                ("spaced remote false, another remote promisor",
+                 '[remote "a b"]\n\tpromisor = false\n[remote "other"]\n\tpromisor = true\n', True)):
+            with self.subTest(name):
+                config.write_text(original + extra, encoding="utf-8")
+                self.assertIs(check.partial_clone(self.alpha), expected)
+        config.write_text(original, encoding="utf-8")
+
     def test_a_tree_or_blob_id_is_not_a_commit(self) -> None:
         tree = subprocess.run(["git", "-C", str(self.alpha), "rev-parse", "HEAD^{tree}"], check=True,
                               capture_output=True, text=True).stdout.strip()

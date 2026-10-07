@@ -51,6 +51,15 @@ class Repo:
         git(self.path, "add", "-A")
         git(self.path, "commit", "-q", "-m", message)
 
+    def stage_symlink(self, name, text):
+        """Commit a mode-120000 index entry. No operating-system symlink is created."""
+        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        hashed = subprocess.run(["git", "hash-object", "-w", "--stdin"], input=text.encode("utf-8"), cwd=self.path,
+                                check=True, capture_output=True, env=env)
+        sha = hashed.stdout.decode("utf-8").strip()
+        git(self.path, "update-index", "--add", "--cacheinfo", f"120000,{sha},{name}")
+        git(self.path, "commit", "-q", "-m", "link")
+
     def scan(self, *args):
         env = dict(os.environ, PYTHONIOENCODING="utf-8")
         return subprocess.run([sys.executable, str(SCRIPT), *args], cwd=self.path, capture_output=True,
@@ -129,6 +138,78 @@ class GenericPatternTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("clean: 2 files", result.stdout)
 
+    def test_a_symlink_blob_with_a_generic_hit_is_reported_without_a_worktree_file(self):
+        repo = Repo(self)
+        repo.stage_symlink("alias.txt", "mail " + EMAIL + "\n")
+        self.assertFalse((repo.path / "alias.txt").exists())
+        result = repo.scan()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("alias.txt:1: email", result.stdout)
+        self.assertNotIn("alice", result.stdout)
+        self.assertNotIn("acme-corp", result.stdout)
+
+    def test_a_symlink_blob_with_a_relative_target_scans_clean(self):
+        repo = Repo(self)
+        repo.stage_symlink("alias.txt", "docs/guide.md\n")
+        self.assertFalse((repo.path / "alias.txt").exists())
+        result = repo.scan()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("clean: 1 files", result.stdout)
+
+    def test_a_regular_file_replacing_a_tracked_symlink_is_scanned_too(self):
+        repo = Repo(self)
+        repo.stage_symlink("alias.txt", "docs/guide.md\n")
+        repo.write("alias.txt", "see acme-internal now\n")  # an unstaged regular file at the symlink path
+        repo.write("terms.txt", "acme-internal\n")
+        result = repo.scan("--terms", str(repo.path / "terms.txt"))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("alias.txt:1: private-term #1", result.stdout)
+        self.assertNotIn("acme", (result.stdout + result.stderr).lower())
+        # The stored text is scanned beside it, and identical text held twice is one scan, not two hits.
+        repo.write("alias.txt", "docs/guide.md\n")
+        result = repo.scan("--terms", str(repo.path / "terms.txt"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("clean: 1 files", result.stdout)
+
+    def test_a_regular_file_replacing_a_tracked_symlink_reports_a_generic_hit_once(self):
+        repo = Repo(self)
+        repo.stage_symlink("alias.txt", "mail " + EMAIL + "\n")
+        # A checkout without symlink support holds the same bytes as a regular file.
+        (repo.path / "alias.txt").write_bytes(("mail " + EMAIL + "\n").encode("utf-8"))
+        result = repo.scan()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.count("alias.txt:1: email"), 1, result.stdout)
+
+    def test_a_worktree_symlink_over_a_tracked_regular_file_is_read_as_its_link_text(self):
+        repo = Repo(self)
+        repo.write("alias.txt", "fine\n")
+        repo.commit()
+        (repo.path / "alias.txt").unlink()
+        try:
+            os.symlink("see acme-internal now", repo.path / "alias.txt")
+        except (OSError, NotImplementedError):
+            self.skipTest("this host cannot create symlinks")
+        repo.write("terms.txt", "acme-internal\n")
+        result = repo.scan("--terms", str(repo.path / "terms.txt"))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("alias.txt:1: private-term #1", result.stdout)
+
+    def test_every_stage_of_a_conflicted_symlink_is_scanned(self):
+        repo = Repo(self)
+        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        shas = []
+        for text in ("docs/base.md\n", "docs/ours.md\n", "mail " + EMAIL + "\n"):
+            hashed = subprocess.run(["git", "hash-object", "-w", "--stdin"], input=text.encode("utf-8"),
+                                    cwd=repo.path, check=True, capture_output=True, env=env)
+            shas.append(hashed.stdout.decode("utf-8").strip())
+        index = "".join(f"120000 {sha} {stage}\talias.txt\n" for stage, sha in enumerate(shas, 1))
+        subprocess.run(["git", "update-index", "--index-info"], input=index.encode("utf-8"), cwd=repo.path,
+                       check=True, capture_output=True, env=env)
+        result = repo.scan()  # only the last stage holds the hit
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("alias.txt:1: email", result.stdout)
+        self.assertIn("1 hit(s) in 1 files", result.stderr)
+
 
 class LocalTermTests(unittest.TestCase):
     def repo_with(self, text, terms=None, name="doc.md"):
@@ -138,6 +219,16 @@ class LocalTermTests(unittest.TestCase):
         if terms is not None:
             repo.write(".public-scan.local", terms)
         return repo
+
+    def test_a_symlink_blob_matching_a_terms_file_is_a_private_term(self):
+        repo = Repo(self)
+        repo.stage_symlink("alias.txt", "see acme-internal now\n")
+        self.assertFalse((repo.path / "alias.txt").exists())
+        repo.write("terms.txt", "acme-internal\n")
+        result = repo.scan("--terms", str(repo.path / "terms.txt"))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("alias.txt:1: private-term #1", result.stdout)
+        self.assertNotIn("acme", (result.stdout + result.stderr).lower())
 
     def test_local_terms_file_is_read_and_terms_are_not_echoed(self):
         repo = self.repo_with("fine\nsee Acme-Internal for details\n", "# private\n\nacme-internal\nother-thing\n")
@@ -558,6 +649,13 @@ class WideEncodingTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn("notes.txt:2: email", result.stdout)
                 self.assertNotIn("alice", result.stdout)
+
+    def test_a_utf16_bom_over_plain_bytes_is_scanned_as_utf8_too(self):
+        for bom in (b"\xff\xfe", b"\xfe\xff"):
+            with self.subTest(bom=bom):
+                result = self.scan_bytes(bom + self.BODY.encode("utf-8"))
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("notes.txt:2: email", result.stdout)
 
     def test_nul_bytes_without_a_bom_are_still_skipped(self):
         result = self.scan_bytes(b"\x00\x01" + EMAIL.encode("ascii") + b"\x00")

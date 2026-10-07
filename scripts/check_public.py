@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import re
 import subprocess
 import sys
@@ -219,7 +220,16 @@ def decode_text(raw: bytes) -> str | None:
 
 
 def scan_tree(repo: Path, terms: Terms) -> int:
-    names = [n for n in git(repo, "ls-files", "-z").decode("utf-8", "replace").split("\0") if n]
+    # ``ls-files -s`` records are ``<mode> <sha> <stage>\t<path>``. A merge can list one path at several stages;
+    # every distinct symlink blob of it is scanned. Gitlinks stay in the name list and are not read.
+    entries: dict[str, list[tuple[str, str]]] = {}
+    for record in git(repo, "ls-files", "-s", "-z").decode("utf-8", "replace").split("\0"):
+        if not record:
+            continue
+        head, path = record.split("\t", 1)
+        mode, sha, _stage = head.split()
+        entries.setdefault(path, []).append((mode, sha))
+    names = list(entries)
     hits = 0
     for name in names:
         label = shown(name, terms)
@@ -228,23 +238,32 @@ def scan_tree(repo: Path, terms: Terms) -> int:
                 continue
             print(f"{label}:0: {finding} (file name)")
             hits += 1
+        modes = {mode for mode, _sha in entries[name]}
+        # A symlink entry is scanned by the link text Git stores. A link is never followed: a working-tree link at
+        # a path is read as its own text, and a regular file at a symlink path is scanned as well as the stored text.
+        raws = [git(repo, "cat-file", "blob", sha)
+                for sha in dict.fromkeys(sha for mode, sha in entries[name] if mode == "120000")]
         target = repo / name
-        if target.is_dir():
-            continue  # a submodule or other directory-like entry
         try:
-            raw = target.read_bytes()
+            if target.is_symlink():
+                if modes - {"120000", "160000"}:
+                    raws.append(os.fsencode(os.readlink(target)))
+            elif modes - {"160000"} and not target.is_dir():  # a directory-like entry is skipped
+                raws.append(target.read_bytes())
         except FileNotFoundError:
-            continue  # tracked but deleted from the working tree
+            pass  # tracked but deleted from the working tree
         except OSError as exc:
             raise Usage(f"cannot read tracked file {label}: {exc.strerror or type(exc).__name__}") from None
-        text = decode_text(raw)
-        if text is None:
-            continue  # binary
-        for number, finding in scan_text(text, terms):
-            if terms.accepts(name, finding):
-                continue
-            print(f"{label}:{number}: {finding}")
-            hits += 1
+        for raw in dict.fromkeys(raws):  # a checkout without symlink support holds the link text as a file
+            texts = [decode_text(raw)]
+            if raw.startswith((b"\xff\xfe", b"\xfe\xff")) and b"\0" not in raw[:8192]:
+                texts.append(raw.decode("utf-8", "replace"))  # a UTF-16 BOM over plain bytes: scan them as UTF-8 too
+            for text in dict.fromkeys(t for t in texts if t is not None):  # None is binary
+                for number, finding in scan_text(text, terms):
+                    if terms.accepts(name, finding):
+                        continue
+                    print(f"{label}:{number}: {finding}")
+                    hits += 1
     if hits:
         print(f"{hits} hit(s) in {len(names)} files", file=sys.stderr)
         return 1
