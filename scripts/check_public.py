@@ -201,24 +201,39 @@ def scan_text(text: str, terms: Terms):
 
 
 def scan_tree(repo: Path, terms: Terms) -> int:
-    names = [n for n in git(repo, "ls-files", "-z").decode("utf-8", "replace").split("\0") if n]
+    # ``ls-files -s`` records are ``<mode> <sha> <stage>\t<path>``. A merge can list one path at several stages;
+    # the first record is the one scanned. Gitlinks stay in the name list and are not read.
+    entries: dict[str, tuple[str, str]] = {}
+    for record in git(repo, "ls-files", "-s", "-z").decode("utf-8", "replace").split("\0"):
+        if not record:
+            continue
+        head, path = record.split("\t", 1)
+        mode, sha, _stage = head.split()
+        entries.setdefault(path, (mode, sha))
+    names = list(entries)
     hits = 0
     for name in names:
+        mode, sha = entries[name]
         label = shown(name, terms)
         for finding in findings(name, terms):
             if terms.accepts(name, finding):
                 continue
             print(f"{label}:0: {finding} (file name)")
             hits += 1
-        target = repo / name
-        if target.is_dir():
-            continue  # a submodule or other directory-like entry
-        try:
-            raw = target.read_bytes()
-        except FileNotFoundError:
-            continue  # tracked but deleted from the working tree
-        except OSError as exc:
-            raise Usage(f"cannot read tracked file {label}: {exc.strerror or type(exc).__name__}") from None
+        if mode == "160000":
+            continue  # a submodule gitlink
+        if mode == "120000":
+            raw = git(repo, "cat-file", "blob", sha)  # stored link text; never follow the working-tree link
+        else:
+            target = repo / name
+            if target.is_dir():
+                continue  # a directory-like entry
+            try:
+                raw = target.read_bytes()
+            except FileNotFoundError:
+                continue  # tracked but deleted from the working tree
+            except OSError as exc:
+                raise Usage(f"cannot read tracked file {label}: {exc.strerror or type(exc).__name__}") from None
         if b"\0" in raw[:8192]:
             continue  # binary
         for number, finding in scan_text(raw.decode("utf-8", "replace"), terms):
