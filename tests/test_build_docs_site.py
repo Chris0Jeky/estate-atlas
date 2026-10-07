@@ -353,6 +353,19 @@ class BuildDocsSiteTest(unittest.TestCase):
         self.assertIn("[c]: <" + GITHUB_BLOB + "tests/c.py>\n", out)
         self.assertIn("[d]: tests/d.py", out)
 
+    def test_setext_underline_ends_the_paragraph_before_indented_code(self) -> None:
+        text = "Heading text\n=====\n    [d](docs/DESIGN.md)\n\n[e](docs/DESIGN.md)\n"
+        out = self.rewrite(text)
+        self.assertIn("\n    [d](docs/DESIGN.md)\n", out)
+        self.assertNotIn("    [d](docs/DESIGN.html)", out)
+        self.assertIn("\n[e](docs/DESIGN.html)\n", out)
+
+    def test_blockquoted_reference_definition_is_converted(self) -> None:
+        plain = "[x]: docs/DESIGN.html\n"
+        self.assertEqual(self.rewrite("[x]: docs/DESIGN.md\n"), plain)
+        self.assertEqual(self.rewrite("> [x]: docs/DESIGN.md\n"), "> " + plain)
+        self.assertEqual(self.rewrite("> > [x]: docs/DESIGN.md\n"), "> > " + plain)
+
     def test_headings_are_found_and_demoted_only_outside_code(self) -> None:
         text = "````md\n```\n# not a heading\n```\n# also not\n````\n\n    # indented code\n\n# Real\n## Sub\n"
         self.assertEqual(self.module._first_heading(text, "fallback"), "Real")
