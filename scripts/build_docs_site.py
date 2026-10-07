@@ -78,6 +78,8 @@ QUOTE = re.compile(r"^ {0,3}> ?")
 FENCE_OPEN = re.compile(r"^( *)(`{3,}|~{3,})(.*)$")
 ATX = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)")
 THEMATIC = re.compile(r"^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
+# A setext underline (the whole line, after blockquote markers are stripped). ``---`` is also thematic.
+SETEXT = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 LIST_MARKER = re.compile(r"^( *)([-+*]|\d{1,9}[.)])(?:( +)(?=\S)| *$)")
 LIQUID_OPENER = re.compile(r"\{(?=[{%])")
 MASK = "\x00"
@@ -157,7 +159,8 @@ def _classify(text: str) -> list[tuple[str, bool]]:
     A fence closes on a line of the same character, at least as long as the opener, with nothing after it;
     one that never closes runs to the end, as in CommonMark. Indented code is four columns past the enclosing
     list item (or the margin), after a blank line or a non-paragraph block; it cannot interrupt a paragraph, and a
-    list item's own continuation paragraph is not code. Blockquote markers are looked through.
+    list item's own continuation paragraph is not code. A setext underline closes the paragraph it follows.
+    Blockquote markers are looked through.
     """
     result: list[tuple[str, bool]] = []
     fence = None  # (character, length, base column, blockquote depth)
@@ -221,7 +224,9 @@ def _classify(text: str) -> list[tuple[str, bool]]:
                 in_paragraph = False
                 result.append((raw, True))
                 continue
-        in_paragraph = not (atx or thematic)
+        # An underline turns the open paragraph into a heading, so a following indented line is code.
+        setext = bool(in_paragraph and SETEXT.match(body))
+        in_paragraph = not (atx or thematic or setext)
         result.append((raw, False))
     return result
 
@@ -299,14 +304,18 @@ def rewrite_links(text: str, source: str, staged: dict[str, str]) -> str:
     def paragraph(run: str) -> str:
         lines, masked_lines = run.split("\n"), _mask_code_spans(run).split("\n")
         for index, masked_line in enumerate(masked_lines):
-            match = REF_DEF.match(masked_line)
+            # A definition may sit behind blockquote markers; the ``>`` prefix stays byte-identical.
+            _, unquoted = _unquote(masked_line)
+            match = REF_DEF.match(unquoted)
             if match and MASK not in match.group(2):
                 target = match.group(2)
                 new = retarget(target[1:-1] if target.startswith("<") else target)
                 if new is not None:
                     line = lines[index]
-                    lines[index] = line[:match.start(2)] + ("<%s>" % new if target.startswith("<") else new) \
-                        + line[match.end(2):]
+                    offset = len(masked_line) - len(unquoted)
+                    start, end = offset + match.start(2), offset + match.end(2)
+                    lines[index] = line[:start] + ("<%s>" % new if target.startswith("<") else new) \
+                        + line[end:]
         run = "\n".join(lines)
         masked = _mask_code_spans(run)
         pieces, position = [], 0
