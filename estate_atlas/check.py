@@ -117,11 +117,12 @@ def partial_clone(path: str | Path) -> bool:
     that know it, so `check` does not read a partial clone at all: its repository stays unresolved. Any doubt
     (an unreadable configuration, a promisor value Git cannot read as a boolean) counts as a partial clone."""
     try:
-        found = _git(path, "config", "--get-regexp",
+        # --name-only prints keys alone: a remote name may hold a space, so a key cannot be cut at the first one.
+        found = _git(path, "config", "--name-only", "--get-regexp",
                      r"^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$")
         if found.returncode not in (0, 1):  # 1: no such key
             return True
-        keys = [line.partition(" ")[0] for line in found.stdout.decode("utf-8", "replace").splitlines()]
+        keys = found.stdout.decode("utf-8", "replace").splitlines()
         # Git makes a promisor remote of extensions.partialClone and of any remote with a partial-clone filter.
         if any(not key.endswith(".promisor") for key in keys):
             return True
@@ -133,7 +134,8 @@ def partial_clone(path: str | Path) -> bool:
         return True
     if booleans.returncode != 0:
         return True
-    return any(line.partition(" ")[2].strip() != "false"
+    # The normalized value is the last token; the key before it may itself contain spaces.
+    return any(line.rpartition(" ")[2].strip() != "false"
                for line in booleans.stdout.decode("utf-8", "replace").splitlines())
 
 
