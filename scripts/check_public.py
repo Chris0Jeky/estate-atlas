@@ -245,9 +245,8 @@ def scan_tree(repo: Path, terms: Terms) -> int:
                 for sha in dict.fromkeys(sha for mode, sha in entries[name] if mode == "120000")]
         target = repo / name
         try:
-            if target.is_symlink():
-                if modes - {"120000", "160000"}:
-                    raws.append(os.fsencode(os.readlink(target)))
+            if target.is_symlink():  # never followed; the link text is what `git add` would stage
+                raws.append(os.fsencode(os.readlink(target)))
             elif modes - {"160000"} and not target.is_dir():  # a directory-like entry is skipped
                 raws.append(target.read_bytes())
         except FileNotFoundError:
