@@ -323,7 +323,7 @@ def _traffic_verbs(value: Any, where: str) -> list[str]:
 
 
 def _traffic_rule(rule: Any, where: str, vocab_terms: dict[str, set[str]]) -> None:
-    _keys(rule, where, {"source"}, {"producer", "actor", "subject", "verb", "pulse"})
+    _keys(rule, where, {"source"}, TRAFFIC_KEYS - {"source"})
     if "pulse" in rule and rule["pulse"] is not True and rule["pulse"] is not False:
         raise AtlasError(f"{where}.pulse: must be a JSON boolean")
     source = rule["source"]
