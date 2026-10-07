@@ -534,5 +534,60 @@ class ReviewRoundTests(unittest.TestCase):
         self.assertEqual(repo.scan("--history").returncode, 1)
 
 
+class WideEncodingTests(unittest.TestCase):
+    """UTF-16/32 text carries NULs, so a BOM has to win over the binary skip. Names here stay fictional."""
+
+    BODY = "line one\nmail " + EMAIL + "\n"
+
+    def scan_bytes(self, raw):
+        repo = Repo(self)
+        (repo.path / "notes.txt").write_bytes(raw)
+        repo.commit()
+        return repo.scan()
+
+    def test_utf16_bom_text_is_scanned_at_the_right_line(self):
+        cases = {
+            "utf-16-le": b"\xff\xfe" + self.BODY.encode("utf-16-le"),
+            "utf-16-be": b"\xfe\xff" + self.BODY.encode("utf-16-be"),
+            "utf-32-le": b"\xff\xfe\x00\x00" + self.BODY.encode("utf-32-le"),
+            "utf-32-be": b"\x00\x00\xfe\xff" + self.BODY.encode("utf-32-be"),
+        }
+        for label, raw in cases.items():
+            with self.subTest(label):
+                result = self.scan_bytes(raw)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("notes.txt:2: email", result.stdout)
+                self.assertNotIn("alice", result.stdout)
+
+    def test_nul_bytes_without_a_bom_are_still_skipped(self):
+        result = self.scan_bytes(b"\x00\x01" + EMAIL.encode("ascii") + b"\x00")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("clean: 1 files", result.stdout)
+
+
+class EmailGuardTests(unittest.TestCase):
+    def test_email_pattern_runs_only_when_the_line_has_an_at_sign(self):
+        module = load_script()
+        self.assertEqual(module.generic_hits("a" * 20000), [])
+        found = module.generic_hits("mail " + EMAIL)
+        self.assertEqual([category for category, _excerpt in found], ["email"])
+
+        real = module.EMAIL_PATTERN
+        seen = []
+
+        class RefuseWithoutAt:
+            def finditer(self, text):
+                seen.append("@" in text)
+                if "@" not in text:
+                    raise AssertionError("email pattern ran on a line with no @")
+                return real.finditer(text)
+
+        with patch.object(module, "EMAIL_PATTERN", RefuseWithoutAt()):
+            self.assertEqual(module.generic_hits("a" * 20000), [])
+            found = module.generic_hits("mail " + EMAIL)
+        self.assertEqual(seen, [True])
+        self.assertEqual([category for category, _excerpt in found], ["email"])
+
+
 if __name__ == "__main__":
     unittest.main()

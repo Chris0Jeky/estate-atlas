@@ -84,15 +84,17 @@ def generic_hits(text: str) -> list[tuple[str, str]]:
     for match in HOST_PATTERN.finditer(text):
         hits.append(("windows-host", mask(match.group(0))))
         break
-    for match in EMAIL_PATTERN.finditer(text):
-        local, domain = match.group(0).split("@", 1)[0], match.group(1).lower()
-        if text[:match.start()].endswith("://"):
-            continue  # URL userinfo
-        if local == "git" or (domain in ALLOWED_EMAIL_DOMAINS or domain.endswith(ALLOWED_EMAIL_SUFFIXES)
-                or local.lower().startswith(("noreply", "no-reply"))):
-            continue
-        hits.append(("email", mask(match.group(0))))
-        break
+    # The address pattern backtracks per start position; a long line with no "@" never matches.
+    if "@" in text:
+        for match in EMAIL_PATTERN.finditer(text):
+            local, domain = match.group(0).split("@", 1)[0], match.group(1).lower()
+            if text[:match.start()].endswith("://"):
+                continue  # URL userinfo
+            if local == "git" or (domain in ALLOWED_EMAIL_DOMAINS or domain.endswith(ALLOWED_EMAIL_SUFFIXES)
+                    or local.lower().startswith(("noreply", "no-reply"))):
+                continue
+            hits.append(("email", mask(match.group(0))))
+            break
     for match in TAILNET_PATTERN.finditer(text):
         hits.append(("tailnet-host", mask(match.group(0))))
         break
@@ -200,6 +202,22 @@ def scan_text(text: str, terms: Terms):
             yield number, finding
 
 
+def decode_text(raw: bytes) -> str | None:
+    """The text in one tracked file, or None when the file is binary.
+
+    A leading BOM selects UTF-32 or UTF-16; both codecs consume the mark. UTF-32 LE has to be
+    decided before UTF-16, because its mark begins with the UTF-16 LE bytes. Without a BOM, a NUL
+    in the first 8192 bytes means binary. Everything else stays UTF-8, undecodable bytes replaced.
+    """
+    if raw.startswith((b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff")):
+        return raw.decode("utf-32", "replace")
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", "replace")
+    if b"\0" in raw[:8192]:
+        return None
+    return raw.decode("utf-8", "replace")
+
+
 def scan_tree(repo: Path, terms: Terms) -> int:
     names = [n for n in git(repo, "ls-files", "-z").decode("utf-8", "replace").split("\0") if n]
     hits = 0
@@ -219,9 +237,10 @@ def scan_tree(repo: Path, terms: Terms) -> int:
             continue  # tracked but deleted from the working tree
         except OSError as exc:
             raise Usage(f"cannot read tracked file {label}: {exc.strerror or type(exc).__name__}") from None
-        if b"\0" in raw[:8192]:
+        text = decode_text(raw)
+        if text is None:
             continue  # binary
-        for number, finding in scan_text(raw.decode("utf-8", "replace"), terms):
+        for number, finding in scan_text(text, terms):
             if terms.accepts(name, finding):
                 continue
             print(f"{label}:{number}: {finding}")
