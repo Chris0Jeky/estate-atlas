@@ -35,7 +35,8 @@ Before publishing, run `python scripts/check_public.py` (the working-tree text o
 tracked file name, binary files' names included; the contents of binary files, detected by a NUL byte in the first
 8 KiB, of submodule or other directory entries, and of tracked files deleted from the working tree are not scanned;
 an index entry that is a symlink is scanned by the link text Git stores for it, and by the working-tree text when
-a regular file has replaced the link there; a link is never followed) and
+a regular file has replaced the link there, or by the working-tree link text when the link now points elsewhere;
+a link is never followed) and
 `python scripts/check_public.py --history` (`git log -p --all` text, commit messages, author lines and ref names).
 It is read-only against git and exits 1 on any hit, printing `path:line: category` with at most a masked excerpt.
 The committed patterns are generic: absolute home-directory paths, default Windows host names, e-mail addresses

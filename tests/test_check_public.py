@@ -194,6 +194,18 @@ class GenericPatternTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("alias.txt:1: private-term #1", result.stdout)
 
+    def test_a_tracked_symlink_retargeted_in_the_worktree_is_read_as_its_new_link_text(self):
+        repo = Repo(self)
+        repo.stage_symlink("alias.txt", "docs/guide.md\n")
+        try:
+            os.symlink("see acme-internal now", repo.path / "alias.txt")
+        except (OSError, NotImplementedError):
+            self.skipTest("this host cannot create symlinks")
+        repo.write("terms.txt", "acme-internal\n")
+        result = repo.scan("--terms", str(repo.path / "terms.txt"))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("alias.txt:1: private-term #1", result.stdout)
+
     def test_every_stage_of_a_conflicted_symlink_is_scanned(self):
         repo = Repo(self)
         env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
