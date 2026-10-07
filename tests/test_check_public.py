@@ -162,6 +162,22 @@ class GenericPatternTests(unittest.TestCase):
         self.assertIn("clean: 1 files", result.stdout)
         self.assertNotIn("email", result.stdout)
 
+    def test_every_stage_of_a_conflicted_symlink_is_scanned(self):
+        repo = Repo(self)
+        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        shas = []
+        for text in ("docs/base.md\n", "docs/ours.md\n", "mail " + EMAIL + "\n"):
+            hashed = subprocess.run(["git", "hash-object", "-w", "--stdin"], input=text.encode("utf-8"),
+                                    cwd=repo.path, check=True, capture_output=True, env=env)
+            shas.append(hashed.stdout.decode("utf-8").strip())
+        index = "".join(f"120000 {sha} {stage}\talias.txt\n" for stage, sha in enumerate(shas, 1))
+        subprocess.run(["git", "update-index", "--index-info"], input=index.encode("utf-8"), cwd=repo.path,
+                       check=True, capture_output=True, env=env)
+        result = repo.scan()  # only the last stage holds the hit
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("alias.txt:1: email", result.stdout)
+        self.assertIn("1 hit(s) in 1 files", result.stderr)
+
 
 class LocalTermTests(unittest.TestCase):
     def repo_with(self, text, terms=None, name="doc.md"):

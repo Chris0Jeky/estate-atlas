@@ -202,45 +202,44 @@ def scan_text(text: str, terms: Terms):
 
 def scan_tree(repo: Path, terms: Terms) -> int:
     # ``ls-files -s`` records are ``<mode> <sha> <stage>\t<path>``. A merge can list one path at several stages;
-    # the first record is the one scanned. Gitlinks stay in the name list and are not read.
-    entries: dict[str, tuple[str, str]] = {}
+    # every distinct symlink blob of it is scanned. Gitlinks stay in the name list and are not read.
+    entries: dict[str, list[tuple[str, str]]] = {}
     for record in git(repo, "ls-files", "-s", "-z").decode("utf-8", "replace").split("\0"):
         if not record:
             continue
         head, path = record.split("\t", 1)
         mode, sha, _stage = head.split()
-        entries.setdefault(path, (mode, sha))
+        entries.setdefault(path, []).append((mode, sha))
     names = list(entries)
     hits = 0
     for name in names:
-        mode, sha = entries[name]
         label = shown(name, terms)
         for finding in findings(name, terms):
             if terms.accepts(name, finding):
                 continue
             print(f"{label}:0: {finding} (file name)")
             hits += 1
-        if mode == "160000":
-            continue  # a submodule gitlink
-        if mode == "120000":
-            raw = git(repo, "cat-file", "blob", sha)  # stored link text; never follow the working-tree link
-        else:
+        modes = {mode for mode, _sha in entries[name]}
+        # A symlink entry is scanned by the link text Git stores, never by following the working-tree link.
+        raws = [git(repo, "cat-file", "blob", sha)
+                for sha in dict.fromkeys(sha for mode, sha in entries[name] if mode == "120000")]
+        if modes - {"120000", "160000"}:  # a regular file: its working-tree text
             target = repo / name
-            if target.is_dir():
-                continue  # a directory-like entry
-            try:
-                raw = target.read_bytes()
-            except FileNotFoundError:
-                continue  # tracked but deleted from the working tree
-            except OSError as exc:
-                raise Usage(f"cannot read tracked file {label}: {exc.strerror or type(exc).__name__}") from None
-        if b"\0" in raw[:8192]:
-            continue  # binary
-        for number, finding in scan_text(raw.decode("utf-8", "replace"), terms):
-            if terms.accepts(name, finding):
-                continue
-            print(f"{label}:{number}: {finding}")
-            hits += 1
+            if not target.is_dir():  # a directory-like entry is skipped
+                try:
+                    raws.append(target.read_bytes())
+                except FileNotFoundError:
+                    pass  # tracked but deleted from the working tree
+                except OSError as exc:
+                    raise Usage(f"cannot read tracked file {label}: {exc.strerror or type(exc).__name__}") from None
+        for raw in raws:
+            if b"\0" in raw[:8192]:
+                continue  # binary
+            for number, finding in scan_text(raw.decode("utf-8", "replace"), terms):
+                if terms.accepts(name, finding):
+                    continue
+                print(f"{label}:{number}: {finding}")
+                hits += 1
     if hits:
         print(f"{hits} hit(s) in {len(names)} files", file=sys.stderr)
         return 1
