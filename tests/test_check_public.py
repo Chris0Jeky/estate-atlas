@@ -155,12 +155,44 @@ class GenericPatternTests(unittest.TestCase):
         result = repo.scan()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("clean: 1 files", result.stdout)
-        # The index holds the link text. A different file on disk at that path must not be what is scanned.
-        repo.write("alias.txt", "mail " + EMAIL + "\n")
-        result = repo.scan()
+
+    def test_a_regular_file_replacing_a_tracked_symlink_is_scanned_too(self):
+        repo = Repo(self)
+        repo.stage_symlink("alias.txt", "docs/guide.md\n")
+        repo.write("alias.txt", "see acme-internal now\n")  # an unstaged regular file at the symlink path
+        repo.write("terms.txt", "acme-internal\n")
+        result = repo.scan("--terms", str(repo.path / "terms.txt"))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("alias.txt:1: private-term #1", result.stdout)
+        self.assertNotIn("acme", (result.stdout + result.stderr).lower())
+        # The stored text is scanned beside it, and identical text held twice is one scan, not two hits.
+        repo.write("alias.txt", "docs/guide.md\n")
+        result = repo.scan("--terms", str(repo.path / "terms.txt"))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("clean: 1 files", result.stdout)
-        self.assertNotIn("email", result.stdout)
+
+    def test_a_regular_file_replacing_a_tracked_symlink_reports_a_generic_hit_once(self):
+        repo = Repo(self)
+        repo.stage_symlink("alias.txt", "mail " + EMAIL + "\n")
+        # A checkout without symlink support holds the same bytes as a regular file.
+        (repo.path / "alias.txt").write_bytes(("mail " + EMAIL + "\n").encode("utf-8"))
+        result = repo.scan()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.count("alias.txt:1: email"), 1, result.stdout)
+
+    def test_a_worktree_symlink_over_a_tracked_regular_file_is_read_as_its_link_text(self):
+        repo = Repo(self)
+        repo.write("alias.txt", "fine\n")
+        repo.commit()
+        (repo.path / "alias.txt").unlink()
+        try:
+            os.symlink("see acme-internal now", repo.path / "alias.txt")
+        except (OSError, NotImplementedError):
+            self.skipTest("this host cannot create symlinks")
+        repo.write("terms.txt", "acme-internal\n")
+        result = repo.scan("--terms", str(repo.path / "terms.txt"))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("alias.txt:1: private-term #1", result.stdout)
 
     def test_every_stage_of_a_conflicted_symlink_is_scanned(self):
         repo = Repo(self)

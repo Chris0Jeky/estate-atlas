@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import re
 import subprocess
 import sys
@@ -220,19 +221,22 @@ def scan_tree(repo: Path, terms: Terms) -> int:
             print(f"{label}:0: {finding} (file name)")
             hits += 1
         modes = {mode for mode, _sha in entries[name]}
-        # A symlink entry is scanned by the link text Git stores, never by following the working-tree link.
+        # A symlink entry is scanned by the link text Git stores. A link is never followed: a working-tree link at
+        # a path is read as its own text, and a regular file at a symlink path is scanned as well as the stored text.
         raws = [git(repo, "cat-file", "blob", sha)
                 for sha in dict.fromkeys(sha for mode, sha in entries[name] if mode == "120000")]
-        if modes - {"120000", "160000"}:  # a regular file: its working-tree text
-            target = repo / name
-            if not target.is_dir():  # a directory-like entry is skipped
-                try:
-                    raws.append(target.read_bytes())
-                except FileNotFoundError:
-                    pass  # tracked but deleted from the working tree
-                except OSError as exc:
-                    raise Usage(f"cannot read tracked file {label}: {exc.strerror or type(exc).__name__}") from None
-        for raw in raws:
+        target = repo / name
+        try:
+            if target.is_symlink():
+                if modes - {"120000", "160000"}:
+                    raws.append(os.fsencode(os.readlink(target)))
+            elif modes - {"160000"} and not target.is_dir():  # a directory-like entry is skipped
+                raws.append(target.read_bytes())
+        except FileNotFoundError:
+            pass  # tracked but deleted from the working tree
+        except OSError as exc:
+            raise Usage(f"cannot read tracked file {label}: {exc.strerror or type(exc).__name__}") from None
+        for raw in dict.fromkeys(raws):  # a checkout without symlink support holds the link text as a file
             if b"\0" in raw[:8192]:
                 continue  # binary
             for number, finding in scan_text(raw.decode("utf-8", "replace"), terms):
