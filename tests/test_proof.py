@@ -442,6 +442,11 @@ class ProofRenderTests(unittest.TestCase):
         self.assertIn('<td>installed</td><td>installed</td><td>unit <span class="pill absent">unverified</span>',
                       checked)
         self.assertIn("evidence levels proven: 0/1", checked)
+        self.assertIn('<p class="check bad">', checked)
+        for status, cls in (("over-claim", "check bad"), ("ok", "check")):
+            with self.subTest(status=status):
+                proven = dict(result, status="ok", proof=[dict(result["proof"][0], status=status)])
+                self.assertIn('<p class="%s">' % cls, render.render_html(atlas, render.parse_check(proven)))
 
     def test_evidence_sentences_and_receipt_order(self) -> None:
         atlas = self.atlas()
