@@ -164,6 +164,9 @@ producer-only events without endpoints. A pulse is an observation, not business 
 
 Rollups: `rollup` refuses to run (returns `skipped: "index not built"`, writes nothing and leaves `last_day` alone)
 while the traffic index is not built or has no flows, so a day is never sealed without rules to route it.
+A routing revision change during a rollup discards its counts and returns `skipped: "index changed during rollup"`.
+Source failures, duplicate ids within a reader page and capped daily reads raise before sealing any days,
+leaving them available for retry. The daily read limit is 1,000,000 rows per source.
 `weekly(rows, last_day, weeks, flows)` and `flags(series, days_stored, first_seen)`:
 - **fading**: last week is below 40% of the 4-week average, and that average is at least 10;
 - **surging**: last week is at least 20 and above 3 times the average;
@@ -191,6 +194,7 @@ non-object entries in a links list retain the documented skip behavior; these ar
 Integer timestamps outside the supported finite-float range are invalid input: `parse_at` raises `ValueError`
 with `timestamp is outside the supported numeric range`, and file routing rejects the input rather than
 skipping or clamping the record. The CLI exits 2, prints no snapshot, and preserves an existing output file.
+JSONL files are read line by line and reject more than 200,000 object records per file before building a snapshot.
 
 Exit codes: 0 means ok, 1 means drift or stale, 2 means invalid input.
 

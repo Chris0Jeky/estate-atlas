@@ -119,8 +119,11 @@ class TrafficHistory:
         the index has no rules to route with (it is not built, or the atlas has
         no flows): nothing is written and `last_day` does not advance, so the
         days stay missing until a later run can route them.
+        A routing revision change skips the write; source failures, duplicate
+        ids and capped reads raise before any days are sealed.
         """
         t0 = time.perf_counter()
+        revision = index.routing_revision
         if not index.built or index.flow_count == 0:
             return {"days_written": 0, "ms": (time.perf_counter() - t0) * 1000.0,
                     "skipped": "index not built"}
@@ -181,8 +184,8 @@ class TrafficHistory:
             written = 0
             self._con.execute("BEGIN IMMEDIATE")
             try:
-                if not index.built or index.flow_count == 0:
-                    # another thread's refresh dropped the rules while this one was routing: the counts above
+                if not index.built or index.flow_count == 0 or index.routing_revision is not revision:
+                    # another thread's refresh changed the rules while this one was routing: the counts above
                     # may be partial, so seal nothing and let a later run roll the days up
                     self._con.execute("ROLLBACK")
                     return {"days_written": 0, "rows_written": 0,
@@ -233,24 +236,27 @@ class TrafficHistory:
         return written
 
     def _paged(self, reader: Any, since: float) -> list[dict[str, Any]]:
-        """Rows past the cursor in id order, at most 1M (like TrafficIndex._drain)."""
+        """Rows past the cursor in id order; reject an incomplete read at the 1M limit."""
         out: list[dict[str, Any]] = []
         after = 0
-        while len(out) < READ_MAX:
+        while True:
             rows = reader(after, since)
             if not isinstance(rows, list) or not rows:
-                break
+                return out
             fresh = sorted((r for r in rows if isinstance(r, dict)
                             and isinstance(r.get("id"), int)
                             and not isinstance(r.get("id"), bool)
                             and r["id"] > after), key=lambda r: r["id"])
+            if any(a["id"] == b["id"] for a, b in zip(fresh, fresh[1:])):
+                raise ValueError("duplicate source id in reader page")
             if not fresh:
-                break
-            out.extend(fresh[:READ_MAX - len(out)])
+                return out
+            if len(fresh) > READ_MAX - len(out):  # a row past the limit: the read is incomplete
+                raise ValueError("daily rollup record limit exceeded")
+            out.extend(fresh)
             after = fresh[-1]["id"]
             if len(rows) < READ_PAGE:
-                break
-        return out
+                return out
 
     @staticmethod
     def _at_of(row: dict[str, Any]) -> float | None:
@@ -286,14 +292,10 @@ class TrafficHistory:
 
     def _roll_links(self, index: Any, links_fn: Any, since: float,
                     today_start: float, add: Any) -> None:
-        """Dated links only, best effort: a links producer that fails leaves that day without link counts (the
-        journal and events for the day still roll up). Links are the smallest source and are recounted live."""
-        try:
-            pairs = links_fn()
-        except Exception:
-            return
+        """Dated links only; source failures propagate so incomplete days remain retryable."""
+        pairs = links_fn()
         if not isinstance(pairs, list):
-            return
+            raise ValueError("links source must return a list")
         for item in pairs:
             if isinstance(item, (list, tuple)) and len(item) == 2:
                 doc_source, link = item
@@ -303,15 +305,7 @@ class TrafficHistory:
                 continue
             if not isinstance(link, dict):
                 continue
-            raw_at = link.get("at")
-            at_f: float | None = None
-            if isinstance(raw_at, (int, float)) and not isinstance(raw_at, bool):
-                at_f = float(raw_at)
-            elif isinstance(raw_at, str) and raw_at:
-                try:
-                    at_f = parse_at(raw_at)
-                except Exception:
-                    at_f = None
+            at_f = parse_at(link.get("at"))
             if at_f is None or at_f < since or at_f >= today_start:
                 continue  # only dated links count
             rec = {"source": "links", "producer": doc_source, "verb": link.get("rel"),
