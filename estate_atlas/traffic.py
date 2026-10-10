@@ -913,17 +913,23 @@ def _read_jsonl(path: Any) -> list[dict[str, Any]]:
     return rows
 
 
-def _with_ids(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _with_ids(rows: list[dict[str, Any]], where: Any) -> list[dict[str, Any]]:
     """Copies of the rows with an integer `id` and a numeric `at`.
 
     A row without an integer id gets the next id after the largest one in the file, in file order. An `at` that
     is not a number or an ISO 8601 time becomes None, and the index then leaves the row out. An integer outside
     the supported numeric range raises ValueError rather than dropping the row."""
     top = max((r["id"] for r in rows if _row_id(r) is not None), default=0)
+    seen: set[int] = set()
     out: list[dict[str, Any]] = []
     for row in rows:
         row = dict(row)
-        if _row_id(row) is None:
+        rid = _row_id(row)
+        if rid is not None:
+            if rid in seen:
+                raise ValueError(f"{Path(where).name}: duplicate explicit id {rid}")
+            seen.add(rid)
+        else:
             top += 1
             row["id"] = top
         row["at"] = parse_at(row.get("at"))
@@ -948,8 +954,8 @@ def route_files(doc: dict[str, Any], journal: Any = None, events: Any = None, li
     gives the same answer every time; pass `time.time()` to route against the wall clock. With no `now` and no
     timestamped record the snapshot is taken at epoch 0, so the answer is still byte-stable.
     """
-    jrows = _with_ids(_read_jsonl(journal)) if journal is not None else []
-    erows = _with_ids(_read_jsonl(events)) if events is not None else []
+    jrows = _with_ids(_read_jsonl(journal), journal) if journal is not None else []
+    erows = _with_ids(_read_jsonl(events), events) if events is not None else []
     pairs: list[tuple[Any, dict[str, Any]]] = []
     if links is not None:
         try:

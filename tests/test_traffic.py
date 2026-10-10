@@ -547,6 +547,13 @@ class LastAtTests(unittest.TestCase):
 
 
 class RouteFilesTests(unittest.TestCase):
+    def test_duplicate_ids_across_page_boundary_raise(self):
+        path = self.write("journal.jsonl", [json.dumps({"id": i, "at": T0})
+                                            for i in (1, 2, 2, 3)])
+        with patch.object(T, "PAGE", 2):
+            with self.assertRaisesRegex(ValueError, r"^journal\.jsonl: duplicate explicit id 2$"):
+                T.route_files(SHOP_ATLAS, journal=path)
+
     def test_jsonl_is_streamed_without_read_text(self):
         path = self.write("journal.jsonl", [json.dumps({"at": T0, "producer": "api", "verb": "enqueue"})])
         with patch.object(Path, "read_text", side_effect=AssertionError("whole-file read")):
