@@ -62,7 +62,7 @@ def _git(path: str | Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     # Git initializes trace2 from owner config before command-line overrides. A partial clone would fetch a
     # missing object on demand: GIT_NO_LAZY_FETCH keeps every read local.
     env.update(GIT_OPTIONAL_LOCKS="0", GIT_TRACE2="0", GIT_TRACE2_EVENT="0", GIT_TRACE2_PERF="0",
-               GIT_NO_LAZY_FETCH="1")
+               GIT_NO_LAZY_FETCH="1", GIT_NO_REPLACE_OBJECTS="1")
     return subprocess.run(["git", "-C", str(path), *args], env=env,
                           capture_output=True, timeout=_GIT_TIMEOUT_S)
 
