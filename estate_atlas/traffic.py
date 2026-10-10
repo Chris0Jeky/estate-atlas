@@ -330,6 +330,7 @@ class TrafficIndex:
         self._now = now
         self._lock = threading.Lock()
         self._last_refresh: float | None = None
+        self._window_start: float | None = None
         self._sha: str | None = None
         self._atlas_ok = False
         self._atlas_error: str | None = None
@@ -402,13 +403,15 @@ class TrafficIndex:
                 self._last_refresh = t0
                 return {"throttled": False}
             sha_s = sha if isinstance(sha, str) else None
-            if not self._built or sha_s != self._sha:
+            if (not self._built or sha_s != self._sha
+                    or (self._window_start is not None and window_start < self._window_start)):
                 self._rebuild(doc, sha_s, t0, window_start, start)
             else:
                 self._expire(window_start)
                 self._read_journal(window_start, incremental=True)
                 self._read_events(window_start, incremental=True)
                 self._recount_links(window_start)
+                self._window_start = window_start
                 self._atlas_ok = True
                 self._atlas_error = None
                 self._refresh_ms = (time.perf_counter() - start) * 1000.0
@@ -416,6 +419,7 @@ class TrafficIndex:
             return {"throttled": False}
 
     def _clear_all(self) -> None:
+        self._window_start = None
         self._rules = Rules()
         self._index = {"exact": {}, "kind": {}}
         self._flows_list = []
@@ -456,6 +460,7 @@ class TrafficIndex:
         self._read_journal(window_start, incremental=False)
         self._read_events(window_start, incremental=False)
         self._recount_links(window_start)
+        self._window_start = window_start
         self._built = True
         self._rebuild_ms = (time.perf_counter() - start) * 1000.0
         self._rebuilt_at = t0
