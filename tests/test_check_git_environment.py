@@ -114,6 +114,20 @@ class CheckGitEnvironmentTests(unittest.TestCase):
     def test_api_proves_selected_checkout_despite_repository_and_object_overrides(self):
         self.assert_selected_checkout("api")
 
+    def test_repository_local_blob_replacement_cannot_substitute_evidence(self):
+        original = self.git(self.complete, "rev-parse", "HEAD:tool.py").decode().strip()
+        replacement_file = self.directory / "replacement.py"
+        replacement_file.write_bytes(b"SUBSTITUTED_CONTENT = True\n")
+        replacement = self.git(self.complete, "hash-object", "-w", str(replacement_file)).decode().strip()
+        self.git(self.complete, "replace", original, replacement)
+        self.assertEqual(self.git(self.complete, "cat-file", "blob", "HEAD:tool.py"),
+                         replacement_file.read_bytes(), "the replacement must be active in ordinary Git reads")
+        for mode in ("cli", "api"):
+            with self.subTest(mode=mode):
+                code, report = self.check(self.complete, mode=mode)
+                self.assertEqual((code, report["status"], report["checked"], report["ok"]),
+                                 (0, "ok", 1, 1), "evidence must come from the original pinned blob")
+
     def test_inherited_command_config_cannot_rewrite_origin_identity(self):
         doc = json.loads(json.dumps(self.doc))
         doc["repos"]["shop"]["remote"] = "example/other"
