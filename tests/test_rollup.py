@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from estate_atlas import rollup as H
 from estate_atlas import traffic as T
@@ -379,6 +380,10 @@ class _FlippingIndex:
     def flow_count(self):
         return self._real.flow_count
 
+    @property
+    def routing_revision(self):
+        return self._real.routing_revision
+
     def route_record(self, rec):
         self._flipped = True
         return self._real.route_record(rec)
@@ -495,6 +500,83 @@ class FailedCommitTests(unittest.TestCase):
             hist._con = real
             hist.close()
             shutil.rmtree(tmp, ignore_errors=True)
+
+class RobustRollupTests(unittest.TestCase):
+    def setUp(self):
+        self.hist = H.TrafficHistory(":memory:")
+        self.addCleanup(self.hist.close)
+        self.clock = Clock()
+        self.index = T.TrafficIndex(journal_rows=lambda a, s: [], event_rows=lambda a, s: [],
+                                    links=lambda: [], atlas=lambda: ("s1", EXPORT), now=self.clock)
+        self.index.refresh()
+
+    def roll(self, journal=lambda a, s: [], events=lambda a, s: [], links=lambda: []):
+        return self.hist.rollup(self.index, journal, events, links, NOW)
+
+    def assert_unsealed(self):
+        self.assertIsNone(self.hist.last_day())
+        self.assertIsNone(self.hist._meta("first_day"))
+        self.assertEqual(self.hist.read_all(), [])
+
+    def test_rule_change_during_rollup_seals_nothing(self):
+        original = self.index.route_record
+        calls = 0
+
+        def route_then_refresh(rec):
+            nonlocal calls
+            result = original(rec)
+            calls += 1
+            if calls == 1:
+                changed = {"components": COMPS,
+                           "flows": [dict(FLOWS[0], id="fb"), *FLOWS[1:]]}
+                self.index._atlas_fn = lambda: ("s2", changed)
+                self.clock.t += 16
+                self.index.refresh()
+            return result
+
+        rows = [jrow(1, day_at(D3)), jrow(2, day_at(D3))]
+        reader = lambda a, s: [r for r in rows if r["id"] > a]
+        with patch.object(self.index, "route_record", side_effect=route_then_refresh):
+            result = self.roll(journal=reader)
+        self.assertEqual(result.get("skipped"), "index changed during rollup")
+        self.assert_unsealed()
+        self.roll(journal=reader)
+        self.assertEqual(self.hist.read_all(), [{"day": D3, "flow": "fb", "crossings": 2, "pulse": 0}])
+
+    def test_link_failure_leaves_days_retryable(self):
+        def failing_links():
+            raise RuntimeError("links unavailable")
+
+        with self.assertRaisesRegex(RuntimeError, "links unavailable"):
+            self.roll(journal=lambda a, s: [jrow(1, day_at(D3))], links=failing_links)
+        self.assert_unsealed()
+        self.roll(links=lambda: [("shop-ledger", {"from": "client:a", "to": "service:api",
+                                                "rel": "tracks", "at": day_at(D3)})])
+        self.assertEqual(self.hist.read_all()[0]["crossings"], 1)
+
+    def test_capped_read_seals_nothing(self):
+        rows = [jrow(i, day_at(D3)) for i in range(1, 5)]
+        for source in ("journal", "events"):
+            with self.subTest(source=source), patch.object(H, "READ_MAX", 2), patch.object(H, "READ_PAGE", 2):
+                with self.assertRaisesRegex(ValueError, "limit"):
+                    self.roll(**{source: lambda a, s: [r for r in rows if r["id"] > a][:2]})
+                self.assert_unsealed()
+        self.roll(journal=lambda a, s: [r for r in rows if r["id"] > a])
+        self.assertEqual(self.hist.read_all()[0]["crossings"], 4)
+
+    def test_nonfinite_link_times_are_not_daily_crossings(self):
+        for stamp in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(stamp=stamp):
+                self.hist._roll_links(self.index, lambda: [("shop-ledger", {
+                    "from": "client:a", "to": "service:api", "rel": "tracks", "at": stamp})],
+                    day_at(D1), NOW, lambda *args: self.fail("nonfinite timestamp was counted"))
+
+    def test_duplicate_page_ids_reject_daily_rollup(self):
+        rows = [jrow(1, day_at(D3)), jrow(1, day_at(D3))]
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            self.roll(journal=lambda a, s: rows)
+        self.assert_unsealed()
+
 
 if __name__ == "__main__":
     unittest.main()

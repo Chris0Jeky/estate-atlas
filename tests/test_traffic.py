@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from estate_atlas import traffic as T
 
@@ -546,6 +547,18 @@ class LastAtTests(unittest.TestCase):
 
 
 class RouteFilesTests(unittest.TestCase):
+    def test_jsonl_is_streamed_without_read_text(self):
+        path = self.write("journal.jsonl", [json.dumps({"at": T0, "producer": "api", "verb": "enqueue"})])
+        with patch.object(Path, "read_text", side_effect=AssertionError("whole-file read")):
+            doc = T.route_files(SHOP_ATLAS, journal=path)
+        self.assertEqual(doc["coverage"]["records"], 1)
+
+    def test_jsonl_over_record_limit_is_rejected(self):
+        path = self.write("journal.jsonl", [json.dumps({"at": T0})] * 3)
+        with patch.object(T, "MAX_ROWS", 2):
+            with self.assertRaisesRegex(ValueError, r"journal\.jsonl:3:.*limit"):
+                T.route_files(SHOP_ATLAS, journal=path)
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="route-files-"))
         self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
@@ -714,6 +727,56 @@ class ParseAtTests(unittest.TestCase):
         self.assertEqual(T.parse_at("1970-01-01T01:00:10+01:00"), 10.0)
         self.assertIsNone(T.parse_at("soon"))
         self.assertIsNone(T.parse_at(None))
+
+
+class RobustIndexTests(unittest.TestCase):
+    def test_nonfinite_link_times_use_parse_at(self):
+        for stamp in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(stamp=stamp):
+                ti, _, _, _, _ = make_index(links=[("shop-ledger", {
+                    "from": "client:a", "to": "service:api", "rel": "tracks", "at": stamp})])
+                doc = ti.snapshot()
+                self.assertEqual(doc["sources"]["links"]["undated"], 1)
+                self.assertEqual(doc["flows"]["f1"]["d24"], 0)
+
+    def test_link_timestamp_range_checked_before_recount(self):
+        ti, clock, _, _, links = make_index(links=[("shop-ledger", {
+            "from": "client:a", "to": "service:api", "rel": "tracks", "at": NOW - 100})])
+        before = ti.snapshot()["flows"]
+        links.append(("shop-ledger", {"from": "client:b", "to": "service:api",
+                                      "rel": "tracks", "at": NOW - 50}))
+        links.append(("shop-ledger", {"at": 10**1000}))
+        clock.t += 16
+        with self.assertRaisesRegex(ValueError, "timestamp is outside the supported numeric range"):
+            ti.refresh()
+        self.assertEqual(ti.snapshot()["flows"], before)
+
+    def test_duplicate_page_ids_reject_source(self):
+        for source in ("journal", "events"):
+            with self.subTest(source=source):
+                row = jrow(1, NOW - 100)
+                ti, _, _, _, _ = make_index(**{source: [row, dict(row)]})
+                doc = ti.snapshot()
+                self.assertFalse(doc["sources"][source]["ok"])
+                self.assertIn("duplicate", doc["sources"][source]["error"])
+                self.assertEqual(doc["coverage"]["records"], 0)
+
+    def test_refresh_after_clock_rollback_is_not_throttled(self):
+        ti, clock, rows, _, _ = make_index([jrow(1, NOW - 100)])
+        rows.append(jrow(2, NOW - 50))
+        clock.t -= 1
+        self.assertFalse(ti.refresh()["throttled"])
+        self.assertEqual(ti.snapshot()["coverage"]["records"], 2)
+        self.assertTrue(ti.refresh()["throttled"])
+
+    def test_verify_after_clock_rollback_is_not_cached(self):
+        ti, clock, rows, _, _ = make_index([jrow(1, NOW - 100)])
+        self.assertTrue(ti.verify()["equal"])
+        rows.append(jrow(2, NOW - 50))
+        clock.t -= 1
+        result = ti.verify()
+        self.assertFalse(result["equal"])
+        self.assertEqual(ti.verify(), result)
 
 
 if __name__ == "__main__":

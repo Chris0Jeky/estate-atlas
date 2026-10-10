@@ -370,11 +370,16 @@ class TrafficIndex:
     def flow_count(self) -> int:
         return len(self._flows_list)
 
+    @property
+    def routing_revision(self) -> object:
+        """Opaque token replaced whenever routing rules are rebuilt or cleared."""
+        return self._rules
+
     # -- refresh ------------------------------------------------------------------
     def refresh(self) -> dict[str, Any]:
         t0 = float(self._now())
         with self._lock:
-            if self._last_refresh is not None and t0 - self._last_refresh < THROTTLE_S:
+            if self._last_refresh is not None and 0 <= t0 - self._last_refresh < THROTTLE_S:
                 return {"throttled": True}
             start = time.perf_counter()
             window_start = float(_bucket(t0 - WINDOW_S))  # whole buckets: rebuild and refresh agree
@@ -488,6 +493,8 @@ class TrafficIndex:
                 break
             fresh = sorted((r for r in rows if isinstance(r, dict) and _row_id(r) is not None and _row_id(r) > after),
                            key=_row_id)
+            if any(_row_id(a) == _row_id(b) for a, b in zip(fresh, fresh[1:])):
+                raise ValueError("duplicate source id in reader page")
             if not fresh:
                 break  # the cursor cannot advance: stop rather than loop forever
             out.extend(fresh[:MAX_ROWS - len(out)])
@@ -568,16 +575,16 @@ class TrafficIndex:
                 del newest[k]
 
     def _recount_links(self, window_start: float) -> None:
-        self._strip_links()
         try:
             pairs = self._links_fn()
         except Exception as exc:  # noqa: BLE001
+            self._strip_links()
             self._src["links"] = {"ok": False, "records": 0, "undated": 0,
                                   "error": _err(f"{type(exc).__name__}: {exc}")}
             return
-        self._src["links"] = {"ok": True, "records": 0, "undated": 0, "error": None}
+        dated = []
         if not isinstance(pairs, list):
-            return
+            pairs = []
         for item in pairs:
             if isinstance(item, (list, tuple)) and len(item) == 2:
                 doc_source, link = item
@@ -587,13 +594,10 @@ class TrafficIndex:
                 continue
             if not isinstance(link, dict):
                 continue
-            raw_at = link.get("at")
-            at_f: float | None = None
-            if raw_at is not None:
-                if isinstance(raw_at, (int, float)) and not isinstance(raw_at, bool):
-                    at_f = float(raw_at)
-                elif isinstance(raw_at, str) and raw_at:
-                    at_f = parse_at(raw_at)
+            dated.append((doc_source, link, parse_at(link.get("at"))))
+        self._strip_links()
+        self._src["links"] = {"ok": True, "records": 0, "undated": 0, "error": None}
+        for doc_source, link, at_f in dated:
             if at_f is not None and at_f < window_start:
                 continue
             rec = {"source": "links", "producer": doc_source, "verb": link.get("rel"),
@@ -837,7 +841,7 @@ class TrafficIndex:
     def verify(self) -> dict[str, Any]:
         t = float(self._now())
         with self._lock:
-            if self._verify_at is not None and t - self._verify_at < VERIFY_TTL_S \
+            if self._verify_at is not None and 0 <= t - self._verify_at < VERIFY_TTL_S \
                     and self._verify_cached is not None:
                 return dict(self._verify_cached)
         fresh = TrafficIndex(journal_rows=self._journal_rows, event_rows=self._event_rows,
@@ -887,23 +891,25 @@ class TrafficIndex:
 
 # -- files ------------------------------------------------------------------------
 def _read_jsonl(path: Any) -> list[dict[str, Any]]:
-    """The object rows of a JSONL file; blank lines are skipped, a bad line raises ValueError naming file:line."""
+    """Stream at most MAX_ROWS objects; blank lines are skipped, errors name file:line."""
     rows: list[dict[str, Any]] = []
     where = Path(path)
     try:
-        text = where.read_text(encoding="utf-8-sig")
+        with where.open(encoding="utf-8-sig") as stream:
+            for number, line in enumerate(stream, 1):
+                if not line.strip():
+                    continue
+                if len(rows) >= MAX_ROWS:
+                    raise ValueError(f"{where}:{number}: record limit exceeded ({MAX_ROWS})")
+                try:
+                    row = strict_json(line)
+                except ValueError:
+                    raise ValueError(f"{where}:{number}: not valid JSON") from None
+                if not isinstance(row, dict):
+                    raise ValueError(f"{where}:{number}: each line must be a JSON object")
+                rows.append(row)
     except OSError as exc:
         raise ValueError(f"cannot read {where}: {exc.strerror or type(exc).__name__}") from None
-    for number, line in enumerate(text.splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            row = strict_json(line)
-        except ValueError:
-            raise ValueError(f"{where}:{number}: not valid JSON") from None
-        if not isinstance(row, dict):
-            raise ValueError(f"{where}:{number}: each line must be a JSON object")
-        rows.append(row)
     return rows
 
 
