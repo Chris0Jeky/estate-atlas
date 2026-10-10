@@ -27,7 +27,7 @@ It is standard-library Python (3.11+), with no dependencies, and is licensed GPL
 | `estate_atlas/cli.py` | `python -m estate_atlas <verb>` | the verbs `validate`, `check`, `export`, `render`, `docs`, `explain`, `tour` and `route` |
 | `estate_atlas/__main__.py` | the entry point | calls `cli.main()` |
 
-Note: these names are public surface kept for embedders: `model.TRAFFIC_KEYS` (the keys a traffic rule may carry), `traffic.BASES` and `traffic.REASONS` (the vocabulary of a routed record's basis and of an unrouted reason), `TrafficHistory.first_seen()` (each flow's earliest stored day) and `TrafficHistory.read_all()` (every stored day/flow row).
+Note: these names are public surface kept for embedders: `model.TRAFFIC_KEYS` (the keys a traffic rule may carry), `traffic.BASES` and `traffic.REASONS` (published basis and reason words; routing can also return the basis `pulse` for a pulse rule, `no-flow` and `unmapped` go with the basis `unrouted`, and the two `ambiguous-*` reasons go with the basis `ambiguous`), `TrafficHistory.first_seen()` (each flow's earliest stored day) and `TrafficHistory.read_all()` (every stored day/flow row).
 
 ## 2. Format (`estate-atlas@3`)
 
