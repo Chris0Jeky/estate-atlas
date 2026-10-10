@@ -1208,7 +1208,9 @@ def render_html(atlas: dict[str, Any],
     promotable_owners: set[str] = set()
     vocab_results: list[dict[str, Any]] = []
     if effective is not None:
-        bad = bool(effective["missing"]) or bool(effective["unresolved"]) or effective["ok"] < effective["checked"]
+        # Mirrors check's drift rule: an over-claimed or unverified proof is as bad as a missing reference.
+        bad = (bool(effective["missing"]) or bool(effective["unresolved"]) or effective["ok"] < effective["checked"]
+               or any(item.get("status") in ("over-claim", "unverified") for item in effective.get("proof", [])))
         cls = "check bad" if bad else "check"
         promotable_owners = {str(p["owner"]) for p in effective.get("promotable", [])}
         vocab_results = list(effective.get("vocabularies", []))
