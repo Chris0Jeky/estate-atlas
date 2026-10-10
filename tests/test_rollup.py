@@ -564,6 +564,12 @@ class RobustRollupTests(unittest.TestCase):
         self.roll(journal=lambda a, s: [r for r in rows if r["id"] > a])
         self.assertEqual(self.hist.read_all()[0]["crossings"], 4)
 
+    def test_source_of_exactly_read_max_rows_in_full_pages_completes(self):
+        rows = [jrow(i, day_at(D3)) for i in range(1, 5)]
+        with patch.object(H, "READ_MAX", 4), patch.object(H, "READ_PAGE", 2):
+            self.roll(journal=lambda a, s: [r for r in rows if r["id"] > a][:2])
+        self.assertEqual(self.hist.read_all()[0]["crossings"], 4)
+
     def test_nonfinite_link_times_are_not_daily_crossings(self):
         for stamp in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(stamp=stamp):

@@ -239,7 +239,7 @@ class TrafficHistory:
         """Rows past the cursor in id order; reject an incomplete read at the 1M limit."""
         out: list[dict[str, Any]] = []
         after = 0
-        while len(out) < READ_MAX:
+        while True:
             rows = reader(after, since)
             if not isinstance(rows, list) or not rows:
                 return out
@@ -251,13 +251,12 @@ class TrafficHistory:
                 raise ValueError("duplicate source id in reader page")
             if not fresh:
                 return out
-            if len(fresh) > READ_MAX - len(out):
+            if len(fresh) > READ_MAX - len(out):  # a row past the limit: the read is incomplete
                 raise ValueError("daily rollup record limit exceeded")
             out.extend(fresh)
             after = fresh[-1]["id"]
             if len(rows) < READ_PAGE:
                 return out
-        raise ValueError("daily rollup record limit reached before end of source")
 
     @staticmethod
     def _at_of(row: dict[str, Any]) -> float | None:
