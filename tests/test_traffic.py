@@ -547,6 +547,13 @@ class LastAtTests(unittest.TestCase):
 
 
 class RouteFilesTests(unittest.TestCase):
+    def test_duplicate_ids_across_page_boundary_raise(self):
+        path = self.write("journal.jsonl", [json.dumps({"id": i, "at": T0})
+                                            for i in (1, 2, 2, 3)])
+        with patch.object(T, "PAGE", 2):
+            with self.assertRaisesRegex(ValueError, r"^journal\.jsonl: duplicate explicit id 2$"):
+                T.route_files(SHOP_ATLAS, journal=path)
+
     def test_jsonl_is_streamed_without_read_text(self):
         path = self.write("journal.jsonl", [json.dumps({"at": T0, "producer": "api", "verb": "enqueue"})])
         with patch.object(Path, "read_text", side_effect=AssertionError("whole-file read")):
@@ -730,6 +737,25 @@ class ParseAtTests(unittest.TestCase):
 
 
 class RobustIndexTests(unittest.TestCase):
+    def test_clock_rollback_restores_expired_low_id_rows(self):
+        old = NOW - 167 * H
+        ti, clock, _, _, _ = make_index(
+            journal=[jrow(1, old), jrow(2, NOW - H)],
+            events=[{"id": 1, "at": old, "source": "cron", "kind": "tick"},
+                    {"id": 2, "at": NOW - H, "source": "cron", "kind": "tick"}],
+            clock=Clock())
+        self.assertEqual(ti.snapshot()["coverage"]["records"], 4)
+        clock.t += 2 * H
+        self.assertFalse(ti.refresh()["throttled"])
+        self.assertEqual(ti.snapshot()["coverage"]["records"], 2)
+        clock.t -= 2 * H
+        self.assertFalse(ti.refresh()["throttled"])
+        doc = ti.snapshot()
+        self.assertEqual(doc["coverage"]["records"], 4)
+        self.assertEqual(doc["sources"]["journal"]["records"], 2)
+        self.assertEqual(doc["sources"]["events"]["records"], 2)
+        self.assertEqual(doc["flows"]["f1"]["d7"], 2)
+
     def test_nonfinite_link_times_use_parse_at(self):
         for stamp in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(stamp=stamp):

@@ -330,6 +330,7 @@ class TrafficIndex:
         self._now = now
         self._lock = threading.Lock()
         self._last_refresh: float | None = None
+        self._window_start: float | None = None
         self._sha: str | None = None
         self._atlas_ok = False
         self._atlas_error: str | None = None
@@ -402,13 +403,15 @@ class TrafficIndex:
                 self._last_refresh = t0
                 return {"throttled": False}
             sha_s = sha if isinstance(sha, str) else None
-            if not self._built or sha_s != self._sha:
+            if (not self._built or sha_s != self._sha
+                    or (self._window_start is not None and window_start < self._window_start)):
                 self._rebuild(doc, sha_s, t0, window_start, start)
             else:
                 self._expire(window_start)
                 self._read_journal(window_start, incremental=True)
                 self._read_events(window_start, incremental=True)
                 self._recount_links(window_start)
+                self._window_start = window_start
                 self._atlas_ok = True
                 self._atlas_error = None
                 self._refresh_ms = (time.perf_counter() - start) * 1000.0
@@ -416,6 +419,7 @@ class TrafficIndex:
             return {"throttled": False}
 
     def _clear_all(self) -> None:
+        self._window_start = None
         self._rules = Rules()
         self._index = {"exact": {}, "kind": {}}
         self._flows_list = []
@@ -456,6 +460,7 @@ class TrafficIndex:
         self._read_journal(window_start, incremental=False)
         self._read_events(window_start, incremental=False)
         self._recount_links(window_start)
+        self._window_start = window_start
         self._built = True
         self._rebuild_ms = (time.perf_counter() - start) * 1000.0
         self._rebuilt_at = t0
@@ -913,17 +918,23 @@ def _read_jsonl(path: Any) -> list[dict[str, Any]]:
     return rows
 
 
-def _with_ids(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _with_ids(rows: list[dict[str, Any]], where: Any) -> list[dict[str, Any]]:
     """Copies of the rows with an integer `id` and a numeric `at`.
 
     A row without an integer id gets the next id after the largest one in the file, in file order. An `at` that
     is not a number or an ISO 8601 time becomes None, and the index then leaves the row out. An integer outside
     the supported numeric range raises ValueError rather than dropping the row."""
     top = max((r["id"] for r in rows if _row_id(r) is not None), default=0)
+    seen: set[int] = set()
     out: list[dict[str, Any]] = []
     for row in rows:
         row = dict(row)
-        if _row_id(row) is None:
+        rid = _row_id(row)
+        if rid is not None:
+            if rid in seen:
+                raise ValueError(f"{Path(where).name}: duplicate explicit id {rid}")
+            seen.add(rid)
+        else:
             top += 1
             row["id"] = top
         row["at"] = parse_at(row.get("at"))
@@ -948,8 +959,8 @@ def route_files(doc: dict[str, Any], journal: Any = None, events: Any = None, li
     gives the same answer every time; pass `time.time()` to route against the wall clock. With no `now` and no
     timestamped record the snapshot is taken at epoch 0, so the answer is still byte-stable.
     """
-    jrows = _with_ids(_read_jsonl(journal)) if journal is not None else []
-    erows = _with_ids(_read_jsonl(events)) if events is not None else []
+    jrows = _with_ids(_read_jsonl(journal), journal) if journal is not None else []
+    erows = _with_ids(_read_jsonl(events), events) if events is not None else []
     pairs: list[tuple[Any, dict[str, Any]]] = []
     if links is not None:
         try:
