@@ -182,6 +182,15 @@ The routing works as follows:
 3. If its endpoints all map to one component, it is `internal`.
 4. Otherwise it is `unrouted` or `ambiguous`.
 
+Normal refresh throttling follows the injected wall clock for backwards compatibility. A backwards
+clock step gets one immediate corrective refresh; further rollback-driven refreshes use a 15-second
+`time.monotonic()` cooldown per index. The cooldown survives atlas failures and forward wall-clock
+recovery, so oscillation cannot replenish the immediate-correction allowance. A skipped rollback
+refresh does not advance the wall-time window or source cursor; when eligible, it rebuilds against the
+then-current earlier window. This bounds rollback-triggered work, not arbitrary forward time jumps.
+Callers may see the previous cached data during the cooldown, as with normal refresh throttling.
+Wall time is sampled after acquiring the index lock, not before waiting on another refresh.
+
 Counts are kept in hourly buckets over 168 hours. `verify()` rebuilds from scratch and compares; its result is
 cached for 60 seconds and describes that comparison, not continuous source monitoring. Declared rules can match
 producer-only events without endpoints. A pulse is an observation, not business volume or health proof.

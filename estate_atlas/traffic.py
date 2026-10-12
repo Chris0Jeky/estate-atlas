@@ -358,6 +358,7 @@ class TrafficIndex:
         self._now = now
         self._lock = threading.Lock()
         self._last_refresh: float | None = None
+        self._last_rollback_refresh: float | None = None
         self._window_start: float | None = None
         self._sha: str | None = None
         self._atlas_ok = False
@@ -406,10 +407,20 @@ class TrafficIndex:
 
     # -- refresh ------------------------------------------------------------------
     def refresh(self) -> dict[str, Any]:
-        t0 = float(self._now())
         with self._lock:
-            if self._last_refresh is not None and 0 <= t0 - self._last_refresh < THROTTLE_S:
-                return {"throttled": True}
+            t0 = float(self._now())
+            if self._last_refresh is not None:
+                elapsed = t0 - self._last_refresh
+                if 0 <= elapsed < THROTTLE_S:
+                    return {"throttled": True}
+                if elapsed < 0:
+                    # One immediate clock correction is allowed. Repeated backwards steps must
+                    # not trigger an expensive rebuild every call, even if wall time recovers.
+                    steady = time.monotonic()
+                    if (self._last_rollback_refresh is not None
+                            and 0 <= steady - self._last_rollback_refresh < THROTTLE_S):
+                        return {"throttled": True}
+                    self._last_rollback_refresh = steady
             start = time.perf_counter()
             window_start = float(_bucket(t0 - WINDOW_S))  # whole buckets: rebuild and refresh agree
             try:
