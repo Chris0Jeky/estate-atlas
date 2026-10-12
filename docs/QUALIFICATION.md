@@ -49,6 +49,20 @@ planned shop flow with synthetic observations: `off_status` appears while its pl
 | Empty or expired observations | No records remain in the selected observation window. | Connection health, absence of historical activity or successful delivery. |
 | Stale tour: exit 1 | A saved document differs from regenerated wording. | Runtime freshness; document equality is a separate check. |
 
+Receipt diagnostics in `check` JSON include a per-proof `unresolved` list, separate from `revisions`
+(which reports unverified commits). Each diagnostic identifies the receipt, repository, full commit and
+reason, and the text report prints the same cause. A receipt with both an unavailable repository and a
+missing revision keeps both diagnostics; it remains unverified. The top-level `unresolved[].refs`
+continues to count ordinary evidence references only. An unavailable extra receipt does not downgrade a
+claim already proven by other receipts, but its cause is still printed.
+
+The failure policy is deliberately unchanged: a known unavailable checkout, non-Git worktree or partial
+clone leaves the relevant proof unresolved. A Git execution error or timeout while reading an otherwise
+resolved blob or verifying a receipt remains a failed verification (`drift`, exit 1), not success-like
+partial coverage. The diagnostic names the failure; it is not proof that a timed-out object is absent.
+Restore the prerequisite and rerun the check before accepting the claim. No automatic retry or fetch is
+performed, and the checker never executes the command recorded in a receipt.
+
 Source proof, observation evidence, snapshot freshness and human acceptance are separate. By default `route`
 uses the newest timestamped input record as its clock, so an old input can still show heat. Supply an explicit
 `--now` to assess an intended window, inspect source completeness and record the observation time outside the
