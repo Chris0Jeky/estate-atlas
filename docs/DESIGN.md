@@ -218,7 +218,16 @@ non-object entries in a links list retain the documented skip behavior; these ar
 Integer timestamps outside the supported finite-float range are invalid input: `parse_at` raises `ValueError`
 with `timestamp is outside the supported numeric range`, and file routing rejects the input rather than
 skipping or clamping the record. The CLI exits 2, prints no snapshot, and preserves an existing output file.
-JSONL files are read line by line and reject more than 200,000 object records per file before building a snapshot.
+JSONL input is read in bounded binary chunks before decoding: at most 1 MiB per physical line
+(excluding LF, CRLF or CR terminators, including any leading BOM), 64 MiB per file (including blank lines,
+BOM and terminators), and 200,000 object records per file. The links JSON list is limited to 16 MiB and
+read with at most one extra sentinel byte before decoding. Exact byte limits are accepted; overflow is
+invalid input, never a truncated snapshot. A byte-budget error names the source (and the physical line
+for a line-budget error), exits 2 through the CLI, prints no snapshot and preserves existing output.
+These are input-byte budgets, not a guarantee about total Python object memory after JSON parsing.
+Embedders of the file adapter may explicitly adjust the module's `MAX_JSONL_LINE_BYTES`,
+`MAX_JSONL_FILE_BYTES` and `MAX_LINKS_FILE_BYTES` constants before use; increasing them increases the
+maximum accepted input and memory demand. Injected live readers retain their separate row contracts.
 
 Exit codes: 0 means ok, 1 means drift or stale, 2 means invalid input.
 
