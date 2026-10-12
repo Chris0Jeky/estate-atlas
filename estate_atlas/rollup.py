@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import datetime
+import math
 import sqlite3
 import threading
 import time
@@ -111,7 +112,7 @@ class TrafficHistory:
                         "SELECT day, flow, crossings, pulse FROM flow_day").fetchall()]
 
     def rollup(self, index: Any, journal_rows: Any, event_rows: Any,
-               links: Any, now: Any) -> dict[str, Any]:
+               links: Any, now: Any, *, by_day: bool = False) -> dict[str, Any]:
         """Roll up the missing complete UTC days, up to yesterday.
 
         The first run backfills at most 90 days; later runs only read the
@@ -122,7 +123,14 @@ class TrafficHistory:
         days stay missing until a later run can route them.
         A routing revision change skips the write; source failures, duplicate
         ids and capped reads raise before any days are sealed.
+
+        With by_day=True, journal/event readers must accept (after_id, since, until)
+        and return only rows in the half-open UTC interval [since, until). Missing
+        days are read separately, so READ_MAX applies per source per day, not to the
+        entire backfill. Links are still read once. All days still commit atomically.
         """
+        if not isinstance(by_day, bool):
+            raise ValueError("by_day must be a boolean")
         t0 = time.perf_counter()
         revision = index.routing_revision
         if not index.built or index.flow_count == 0:
@@ -179,8 +187,15 @@ class TrafficHistory:
                 if source in ("journal", "events", "links"):
                     cell[source] += 1
 
-            self._roll_journal(index, journal_rows, since, today_start, add)
-            self._roll_events(index, event_rows, since, today_start, add)
+            if by_day:
+                for day in missing:
+                    start = _day_start(day)
+                    until = start + DAY_S
+                    self._roll_journal(index, self._day_reader(journal_rows, until), start, until, add)
+                    self._roll_events(index, self._day_reader(event_rows, until), start, until, add)
+            else:
+                self._roll_journal(index, journal_rows, since, today_start, add)
+                self._roll_events(index, event_rows, since, today_start, add)
             self._roll_links(index, links, since, today_start, add)
             written = 0
             self._con.execute("BEGIN IMMEDIATE")
@@ -254,6 +269,21 @@ class TrafficHistory:
             after = kept[-1]["id"]
             if len(rows) < READ_PAGE:
                 return out
+
+    @classmethod
+    def _day_reader(cls, reader: Any, until: float) -> Any:
+        """Adapt the explicit three-argument contract; refuse out-of-window dated rows."""
+        def read(after: int, since: float) -> list[dict[str, Any]]:
+            rows = reader(after, since, until)
+            if not isinstance(rows, list):
+                raise ValueError("source reader must return a list")
+            for row in rows:
+                if isinstance(row, dict):
+                    at = cls._at_of(row)
+                    if at is not None and (not math.isfinite(at) or not since <= at < until):
+                        raise ValueError("day-bounded reader returned a timestamp outside its window")
+            return rows
+        return read
 
     @staticmethod
     def _at_of(row: dict[str, Any]) -> float | None:

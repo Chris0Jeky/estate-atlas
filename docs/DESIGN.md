@@ -199,7 +199,36 @@ Rollups: `rollup` refuses to run (returns `skipped: "index not built"`, writes n
 while the traffic index is not built or has no flows, so a day is never sealed without rules to route it.
 A routing revision change during a rollup discards its counts and returns `skipped: "index changed during rollup"`.
 Source failures, duplicate ids within a reader page and capped daily reads raise before sealing any days,
-leaving them available for retry. The daily read limit is 1,000,000 rows per source.
+leaving them available for retry. By default, `rollup(index, journal_rows, event_rows, links, now)`
+keeps its two-argument reader contract and a 1,000,000-row limit per source over the whole requested
+backfill. A cap is a refusal, not evidence that the source ended.
+
+For larger multi-day backfills, opt in with `by_day=True`. Journal and event readers must then accept
+`(after_id, since, until)` and return only records in the half-open UTC day `[since, until)`, ordered
+by ID and paged as before. Apply **both** time bounds before the source's page limit, not by filtering
+an already limited page: a short filtered page could falsely signal that the day is complete. The
+adapter rejects dated rows outside the requested day and non-finite timestamps. Unusable non-numeric
+timestamps retain the existing skip policy. IDs need not be chronological.
+
+```python
+history.rollup(index, read_journal_day, read_events_day, read_links, now, by_day=True)
+# read_journal_day(after_id, since, until) -> list of at most 5,000 journal rows
+# read_events_day(after_id, since, until) -> list of at most 5,000 event rows
+```
+
+Each missing day gets its own 1,000,000-row source budget and replay check; exactly the limit is
+accepted after the confirming end-of-source page. Links retain their original callback contract and
+are read once. All requested days and metadata still commit in **one** transaction only after every
+source completes and the routing revision is unchanged. A late source or write failure seals nothing.
+The initial range remains at most 90 days. Already sealed days are not rewritten. Callers remain
+responsible for complete, stable source snapshots and globally unique immutable IDs; replay checking
+does not compare payloads across separate day reads. The mode requires more queries and does not bound
+the total duration of caller-provided readers or their own allocations.
+
+This is day partitioning, not resumable persistence. One day exceeding its budget still fails closed;
+it requires a separately designed resumable reader or an explicitly larger limit. There is no silent
+fallback from a three-argument callback to a two-argument callback, no limit bypass, and no cap-triggered
+partial history seal. The default mode is unchanged.
 `weekly(rows, last_day, weeks, flows)` and `flags(series, days_stored, first_seen)`:
 - **fading**: last week is below 40% of the 4-week average, and that average is at least 10;
 - **surging**: last week is at least 20 and above 3 times the average;
