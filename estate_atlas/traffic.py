@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .model import strict_json
+from ._record_io import bounded_document, bounded_lines
 
 SCHEMA = "estate-atlas-traffic@1"
 WINDOW_HOURS = 168
@@ -26,6 +27,9 @@ THROTTLE_S = 15.0
 VERIFY_TTL_S = 60.0
 MAX_MEMO = 50_000
 MAX_ROWS = 200_000
+MAX_JSONL_LINE_BYTES = 1024 * 1024
+MAX_JSONL_FILE_BYTES = 64 * 1024 * 1024
+MAX_LINKS_FILE_BYTES = 16 * 1024 * 1024
 PAGE = 5_000
 RING = 20
 ERROR_MAX = 200
@@ -920,25 +924,25 @@ class TrafficIndex:
 
 # -- files ------------------------------------------------------------------------
 def _read_jsonl(path: Any) -> list[dict[str, Any]]:
-    """Stream at most MAX_ROWS objects; blank lines are skipped, errors name file:line."""
+    """Read bounded UTF-8 lines and at most MAX_ROWS objects; errors name file:line."""
     rows: list[dict[str, Any]] = []
     where = Path(path)
-    try:
-        with where.open(encoding="utf-8-sig") as stream:
-            for number, line in enumerate(stream, 1):
-                if not line.strip():
-                    continue
-                if len(rows) >= MAX_ROWS:
-                    raise ValueError(f"{where}:{number}: record limit exceeded ({MAX_ROWS})")
-                try:
-                    row = strict_json(line)
-                except ValueError:
-                    raise ValueError(f"{where}:{number}: not valid JSON") from None
-                if not isinstance(row, dict):
-                    raise ValueError(f"{where}:{number}: each line must be a JSON object")
-                rows.append(row)
-    except OSError as exc:
-        raise ValueError(f"cannot read {where}: {exc.strerror or type(exc).__name__}") from None
+    for number, raw in bounded_lines(where, MAX_JSONL_LINE_BYTES, MAX_JSONL_FILE_BYTES):
+        try:
+            line = raw.decode("utf-8-sig" if number == 1 else "utf-8")
+        except UnicodeDecodeError:
+            raise ValueError(f"{where}:{number}: not valid JSON") from None
+        if not line.strip():
+            continue
+        if len(rows) >= MAX_ROWS:
+            raise ValueError(f"{where}:{number}: record limit exceeded ({MAX_ROWS})")
+        try:
+            row = strict_json(line)
+        except ValueError:
+            raise ValueError(f"{where}:{number}: not valid JSON") from None
+        if not isinstance(row, dict):
+            raise ValueError(f"{where}:{number}: each line must be a JSON object")
+        rows.append(row)
     return rows
 
 
@@ -987,10 +991,9 @@ def route_files(doc: dict[str, Any], journal: Any = None, events: Any = None, li
     erows = _with_ids(_read_jsonl(events), events) if events is not None else []
     pairs: list[tuple[Any, dict[str, Any]]] = []
     if links is not None:
+        data = bounded_document(Path(links), MAX_LINKS_FILE_BYTES)
         try:
-            raw = strict_json(Path(links).read_text(encoding="utf-8-sig"))
-        except OSError as exc:
-            raise ValueError(f"cannot read {links}: {exc.strerror or type(exc).__name__}") from None
+            raw = strict_json(data.decode("utf-8-sig"))
         except ValueError:
             raise ValueError(f"{links}: not valid JSON") from None
         if not isinstance(raw, list):
