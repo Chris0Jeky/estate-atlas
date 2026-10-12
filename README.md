@@ -31,17 +31,37 @@ Consumer proof and its limits: [docs/QUALIFICATION.md](docs/QUALIFICATION.md).
 
 ## Public check
 
-Before publishing, run `python scripts/check_public.py` (the working-tree text of every tracked file, and every
-tracked file name, binary files' names included; the contents of binary files, detected by a NUL byte in the first
-8 KiB, of submodule or other directory entries, and of tracked files deleted from the working tree are not scanned;
-an index entry that is a symlink is scanned by the link text Git stores for it, and by the working-tree text when
-a regular file has replaced the link there, or by the working-tree link text when the link now points elsewhere;
-a link is never followed) and
-`python scripts/check_public.py --history` (`git log -p --all` text, commit messages, author lines and ref names).
-It is read-only against git and exits 1 on any hit, printing `path:line: category` with at most a masked excerpt.
-The committed patterns are generic: absolute home-directory paths, default Windows host names, e-mail addresses
-(examples and no-reply forms excepted) and `.ts.net` hosts. Terms specific to your own estate live one per line in
-the gitignored `.public-scan.local` (or the file given with `--terms`); they are matched as whole words, reported
-only by their position in that file, and never committed. History hits are reported, not repaired.
+Before publishing, check both the content about to be staged and the committed content:
+
+```
+python scripts/check_public.py
+python scripts/check_public.py --committed
+python scripts/check_public.py --history
+```
+
+The default mode scans working-tree text and tracked file names. `--committed` scans the names and blobs
+at HEAD, so a dirty cleanup, deletion or staged replacement cannot hide committed content. Both modes scan
+symlink text without following the link; default mode also checks the index's symlink text. Gitlink names
+are checked, but submodule contents are not. Deleted working files have no content in default mode.
+UTF-16/UTF-32 text with a BOM is decoded. Without a BOM, a NUL byte in the first 8 KiB marks binary content,
+which is not scanned; its name is still checked.
+
+`--history` scans `git log -m -p --all`, including merge-parent diffs, messages, author lines and ref names.
+Git C-quoted paths are decoded before matching. Wrapped private terms are checked within each text file,
+commit message and each side of each diff hunk, never by joining separate files, hunk sides or metadata.
+History is a text-diff scan, not a complete binary/archive scan: an unchanged part outside a diff hunk is
+not examined in that commit. Commits and repeated merge-parent hits are counted once.
+
+The scan reuses the evidence checker's read-only Git boundary, disables replacement objects and lazy
+fetching, and refuses partial clones or unreadable Git configuration. It never repairs history. Exit 0
+means no detected hits in the selected scope, 1 means hits, and 2 means the scan could not complete.
+A hit prints `path:line: category` with at most a masked excerpt.
+
+The committed patterns are generic: absolute home-directory paths, default Windows host names, e-mail
+addresses (examples and no-reply forms excepted) and `.ts.net` hosts. Private terms live one per line in
+the gitignored `.public-scan.local` (or `--terms FILE`); they are reported only by their position in that
+file. `allow: PATH = TERM` accepts that term only in the exact file path and its name, in tree and history
+modes. Accepted hits are counted. File allowances never suppress author, commit-message or ref findings.
+Keep that terms file private. A clean scan does not establish that an artifact is safe to publish.
 
 > Status: pre-release.
