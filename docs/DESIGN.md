@@ -151,6 +151,28 @@ The traffic engine is a library: the caller injects the readers:
 - `atlas() -> (version, doc)`;
 - `now()`.
 
+Reader results must be lists, including an empty list when there are no records. A callback returning
+`None`, a mapping or any other non-list value is a source failure, never a healthy empty source. The
+live index keeps other sources usable and reports the failing source as `ok: false`; rollup raises
+before sealing any incomplete days. A later successful read can retry those days. An invalid links
+recount removes old link counts, matching a links callback exception, rather than retaining stale
+counts as current evidence.
+
+Passing `links=None` explicitly disables that optional source and is equivalent to an empty-list
+callback in both the index and rollup. This is distinct from a links callback returning `None`, which
+is malformed. Journal and event callbacks remain required. Rollup accepts an index-like object only
+when it supplies `built`, `flow_count`, `route_record(record)`, and a stable `routing_revision` identity
+token that is replaced whenever routing changes. Omitting the token is not an opt-out from detecting
+mixed-revision rollups.
+
+Within one index drain or rollup source read, replaying an already-seen ID with different row content
+is rejected before cursor filtering. Identical cross-page replays remain deduplicated; duplicate fresh
+IDs inside one page remain invalid. Accepted rows are copied so a reader that reuses mutable dictionaries
+cannot alter the comparison baseline. The index retains at most its admitted rows for that refresh;
+rollup retains at most its read limit. This does not detect changes hidden by a producer's cursor filter,
+or compare replay payloads across separate refreshes or already-sealed historical days. Producers must
+still supply stable, unique IDs for immutable records.
+
 The routing works as follows:
 1. A record matched by a declared rule gets basis `declared`, or `pulse` when only pulse rules matched.
 2. Otherwise its endpoints are mapped through `instances`, and if exactly one flow joins them it gets basis
