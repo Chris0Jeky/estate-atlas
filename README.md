@@ -1,5 +1,7 @@
 # estate-atlas
 
+<p align="center"><img src="docs/assets/estate-atlas-loop.svg" alt="estate-atlas workflow, animated" width="100%"></p>
+
 **Your architecture as checked data.**
 
 [![Full test suite](https://github.com/Chris0Jeky/estate-atlas/actions/workflows/tests.yml/badge.svg)](https://github.com/Chris0Jeky/estate-atlas/actions/workflows/tests.yml)
