@@ -141,3 +141,12 @@ lists candidates, and `py -3.11 scripts/qualify_wheel.py --report <directory-out
 minimum version when installed. If Python 3.11 is absent, record **Python 3.11: NOT RUN, interpreter unavailable**
 with that repeat command in the private receipt. Success on a newer interpreter or syntax inspection is not
 minimum-version execution proof.
+
+### Concurrent history writers
+
+A rollup calculates missing-day counts before taking the SQLite write lock. Once it holds
+`BEGIN IMMEDIATE`, it rechecks the `last_day` value used for that calculation. If another history
+connection advanced the watermark, it rolls back and returns `skipped: history changed during rollup`
+with zero days/rows written. Retry against the current history; do not treat the skipped computation
+as a newly sealed day. This applies to ordinary and day-bounded readers, including metadata-only
+sealing of already-present rows. It does not rewrite prior history or validate manual database edits.
