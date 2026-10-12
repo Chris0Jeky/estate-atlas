@@ -435,6 +435,7 @@ def _proof(owner: str, block: dict[str, Any], ladder: tuple[str, ...], revision:
     receipts = list(block["receipts"])
     states: dict[str, str] = {}
     problems: list[dict[str, Any]] = []
+    unavailable: list[dict[str, Any]] = []
     for receipt in receipts:
         worst = "ok"
         for rev in receipt["revisions"]:
@@ -442,8 +443,11 @@ def _proof(owner: str, block: dict[str, Any], ladder: tuple[str, ...], revision:
             if state == "missing":
                 worst = "missing"
                 problems.append({"receipt": receipt["id"], "repo": rev["repo"], "commit": rev["commit"], "why": why})
-            elif state == "unresolved" and worst == "ok":
-                worst = "unresolved"
+            elif state == "unresolved":
+                unavailable.append({"receipt": receipt["id"], "repo": rev["repo"],
+                                    "commit": rev["commit"], "why": why})
+                if worst == "ok":
+                    worst = "unresolved"
         states[receipt["id"]] = worst
     position = {level: index for index, level in enumerate(ladder)}
     claimed = position[block["claim"]]
@@ -478,10 +482,11 @@ def _proof(owner: str, block: dict[str, Any], ladder: tuple[str, ...], revision:
     else:
         status = "ok"
     problems.sort(key=lambda item: (item["receipt"], item["repo"], item["commit"]))
+    unavailable.sort(key=lambda item: (item["receipt"], item["repo"], item["commit"]))
     return {"owner": owner, "claimed": block["claim"],
             "receipted": ladder[receipted] if receipted >= 0 else None,
             "proven": ladder[proven] if proven >= 0 else None,
-            "status": status, "levels": levels, "revisions": problems}
+            "status": status, "levels": levels, "revisions": problems, "unresolved": unavailable}
 
 
 def check(doc: dict[str, Any], repos: dict[str, dict[str, Any]], host: str) -> dict[str, Any]:
@@ -698,14 +703,15 @@ def _summary(report: dict[str, Any]) -> str:
         held = sum(1 for item in proof if item["status"] == "ok")
         lines.append(f"Evidence levels: {held}/{len(proof)} claims proven.")
     for item in proof:
-        if item["status"] == "ok" and item["proven"] == item["claimed"]:
+        if item["status"] == "ok" and item["proven"] == item["claimed"] and not item.get("unresolved"):
             continue
-        label = "under-claim" if item["status"] == "ok" else item["status"]
+        label = ("under-claim" if item["status"] == "ok" and item["proven"] != item["claimed"]
+                 else item["status"])
         reach = (f", receipts reach {item['receipted'] or 'no level'}"
                  if item["receipted"] != item["proven"] else "")
         lines.append(f"- proof {label}: {item['owner']}: claimed {item['claimed']}, "
                      f"proven {item['proven'] or 'no level'}{reach}")
-        for problem in item["revisions"]:
+        for problem in item["revisions"] + item.get("unresolved", []):
             lines.append(f"  - receipt {problem['receipt']}: {problem['repo']}@{problem['commit'][:12]}: "
                          f"{problem['why']}")
     return "\n".join(lines) + "\n"
