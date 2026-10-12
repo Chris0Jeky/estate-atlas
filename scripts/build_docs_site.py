@@ -31,7 +31,7 @@ import stat
 import sys
 import tempfile
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -71,7 +71,7 @@ SITE_LICENSE = "GPL-3.0-only"
 # Repository path each staged page comes from, for the "Edit this page" link.
 SOURCE_OF = {dest: src for src, dest in PAGES}
 
-LINK = re.compile(r'\[([^\]]*)\]\(([^)\s]+)((?:\s+"[^"]*")?)\)')
+LINK = re.compile(r'\[([^\]]*)\]\((<[^>\n]*>|[^<>)\s]+)((?:\s+"[^"]*")?)\)')
 REF_DEF = re.compile(r"^( {0,3}\[[^\]\n]+\]:[ \t]*)(<[^>\n]*>|\S+)(.*)$")
 SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 QUOTE = re.compile(r"^ {0,3}> ?")
@@ -282,7 +282,9 @@ def rewrite_links(text: str, source: str, staged: dict[str, str]) -> str:
 
     ``source`` is the repository path of the page, ``staged`` maps published repository paths to staged
     paths. External links, anchors, absolute paths and code (fenced, indented or inline) are left alone.
-    Inline links and reference definitions are handled; staged Markdown pages are linked as their ``.html``.
+    Inline links (including angle-delimited targets) and reference definitions share URL decoding and
+    lookup rules. Each path is decoded once and its destination encoded once; queries/fragments stay verbatim.
+    Root-relative URLs belong to the hosting site, not this repository, and are never retargeted.
     """
     base = posixpath.dirname(source)
     here = posixpath.dirname(staged[source])
@@ -292,11 +294,17 @@ def rewrite_links(text: str, source: str, staged: dict[str, str]) -> str:
         path, suffix = split[0], "".join(split[1:])
         if not path or SCHEME.match(path) or path.startswith("/"):
             return None
+        try:
+            path = unquote(path, encoding="utf-8", errors="strict")
+        except UnicodeDecodeError:
+            return None  # preserve an invalid URL rather than silently replacing bytes
+        if path.startswith("/") or SCHEME.match(path):
+            return None
         resolved = posixpath.normpath(posixpath.join(base, path))
         if resolved in (".", "..") or resolved.startswith("../"):
             return None
         if resolved in staged:
-            new = posixpath.relpath(_published(staged[resolved]), here or ".")
+            new = quote(posixpath.relpath(_published(staged[resolved]), here or "."), safe="/")
         else:
             new = REPO_BLOB + quote(resolved, safe="/") + ("/" if path.endswith("/") else "")
         return new + suffix
@@ -322,7 +330,10 @@ def rewrite_links(text: str, source: str, staged: dict[str, str]) -> str:
         for match in LINK.finditer(masked):
             pieces.append(run[position:match.start()])
             target, title = match.group(2), run[match.start(3):match.end(3)]
-            new = None if MASK in target + title else retarget(target)
+            angled = target.startswith("<")
+            new = None if MASK in target + title else retarget(target[1:-1] if angled else target)
+            if new is not None and angled:
+                new = "<" + new + ">"
             pieces.append(run[match.start():match.end()] if new is None else
                           "[%s](%s%s)" % (run[match.start(1):match.end(1)], new, title))
             position = match.end()
