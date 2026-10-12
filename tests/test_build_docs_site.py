@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+from html.parser import HTMLParser
 import os
 import re
 import shutil
@@ -14,6 +15,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "build_docs_site.py"
@@ -548,10 +550,21 @@ class BuildDocsSiteTest(unittest.TestCase):
             body = self.liquid(text[cut:])  # the page as Jekyll emits it (navigation lives in the layout)
             body = re.sub(r"^ {0,3}(`{3,}|~{3,}).*?^ {0,3}\1[`~]*[ \t]*$", "", body, flags=re.S | re.M)
             body = re.sub(r"`[^`\n]*`", "", body)
-            for target in re.findall(r"\]\(([^)\s]+)", body):
-                if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target) or target.startswith("#"):
+            targets = [a or b for a, b in re.findall(r"\]\((?:<([^>]+)>|([^)\s]+))", body)]
+            targets += [a or b for a, b in re.findall(
+                r"^ {0,3}(?:> ?)*\[[^\]\n]+\]:[ \t]*(?:<([^>]+)>|(\S+))", body, re.M)]
+
+            class Links(HTMLParser):
+                def handle_starttag(self, tag, attrs):
+                    targets.extend(value for key, value in attrs if key in {"href", "src"} and value)
+
+            parser = Links()
+            parser.feed(body)
+            parser.close()
+            for target in targets:
+                if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target) or target.startswith(("#", "/")):
                     continue
-                path = re.split(r"[#?]", target, maxsplit=1)[0]
+                path = unquote(re.split(r"[#?]", target, maxsplit=1)[0])
                 self.assertFalse(path.endswith(".md"), "%s links to a Markdown source: %s" % (page.name, target))
                 resolved = (page.parent / path).resolve()
                 if resolved.suffix == ".html" and not resolved.exists():
@@ -568,10 +581,15 @@ class BuildDocsSiteTest(unittest.TestCase):
 
     def test_workflow_runs_the_tests_and_watches_their_inputs(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
-        for path in ("LICENSE", "tests/test_build_docs_site.py", "scripts/build_docs_site.py"):
+        for path in ("LICENSE", "tests/test_build_docs_site.py", "tests/test_docs_site_links.py",
+                     "scripts/build_docs_site.py"):
             self.assertEqual(workflow.count("      - %s\n" % path), 2, path + " must trigger push and pull_request")
-        self.assertIn("unittest", workflow)
-        self.assertLess(workflow.index("unittest"), workflow.index("scripts/build_docs_site.py --out"))
+        runs = re.findall(r"^        run: (.+)$", workflow, re.M)
+        gate = "python -m unittest discover -s tests -p 'test*docs_site*.py' -v"
+        stage = "python scripts/build_docs_site.py --out _site_src"
+        self.assertEqual(runs.count(gate), 1, "the staging test command must actually execute once")
+        self.assertIn(stage, runs)
+        self.assertLess(runs.index(gate), runs.index(stage))
 
 
 if __name__ == "__main__":
