@@ -154,7 +154,9 @@ The traffic engine is a library: the caller injects the readers:
 The routing works as follows:
 1. A record matched by a declared rule gets basis `declared`, or `pulse` when only pulse rules matched.
 2. Otherwise its endpoints are mapped through `instances`, and if exactly one flow joins them it gets basis
-   `inferred`.
+   `inferred`. An event needs exactly two distinct mapped components for this inference; several nodes in the
+   same component still count as one endpoint. Three or more mapped components are `ambiguous` regardless of
+   which graph edges exist. A unique declared rule still takes precedence.
 3. If its endpoints all map to one component, it is `internal`.
 4. Otherwise it is `unrouted` or `ambiguous`.
 
