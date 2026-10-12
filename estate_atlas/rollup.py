@@ -7,6 +7,7 @@ rollups agree with what the live index would have said.
 """
 from __future__ import annotations
 
+import copy
 import datetime
 import sqlite3
 import threading
@@ -14,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .traffic import parse_at
+from .traffic import _fresh_rows, parse_at
 
 DAY_S = 24 * 3600
 RETENTION_DAYS = 400
@@ -238,23 +239,19 @@ class TrafficHistory:
     def _paged(self, reader: Any, since: float) -> list[dict[str, Any]]:
         """Rows past the cursor in id order; reject an incomplete read at the 1M limit."""
         out: list[dict[str, Any]] = []
+        seen: dict[int, dict[str, Any]] = {}
         after = 0
         while True:
             rows = reader(after, since)
-            if not isinstance(rows, list) or not rows:
-                return out
-            fresh = sorted((r for r in rows if isinstance(r, dict)
-                            and isinstance(r.get("id"), int)
-                            and not isinstance(r.get("id"), bool)
-                            and r["id"] > after), key=lambda r: r["id"])
-            if any(a["id"] == b["id"] for a, b in zip(fresh, fresh[1:])):
-                raise ValueError("duplicate source id in reader page")
+            fresh = _fresh_rows(rows, after, seen)
             if not fresh:
                 return out
             if len(fresh) > READ_MAX - len(out):  # a row past the limit: the read is incomplete
                 raise ValueError("daily rollup record limit exceeded")
-            out.extend(fresh)
-            after = fresh[-1]["id"]
+            kept = copy.deepcopy(fresh)
+            out.extend(kept)
+            seen.update((r["id"], r) for r in kept)
+            after = kept[-1]["id"]
             if len(rows) < READ_PAGE:
                 return out
 
@@ -293,7 +290,7 @@ class TrafficHistory:
     def _roll_links(self, index: Any, links_fn: Any, since: float,
                     today_start: float, add: Any) -> None:
         """Dated links only; source failures propagate so incomplete days remain retryable."""
-        pairs = links_fn()
+        pairs = [] if links_fn is None else links_fn()
         if not isinstance(pairs, list):
             raise ValueError("links source must return a list")
         for item in pairs:

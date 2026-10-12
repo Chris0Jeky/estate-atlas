@@ -5,6 +5,7 @@ the `route` verb uses. The output document is `estate-atlas-traffic@1`.
 """
 from __future__ import annotations
 
+import copy
 import datetime
 import hashlib
 import json
@@ -320,6 +321,27 @@ def _row_id(row: dict[str, Any]) -> int | None:
     return rid if isinstance(rid, int) and not isinstance(rid, bool) else None
 
 
+def _fresh_rows(rows: Any, after: int, seen: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate a page before cursor filtering, preserving identical cross-page replay tolerance."""
+    if not isinstance(rows, list):
+        raise ValueError("source reader must return a list")
+    fresh: list[dict[str, Any]] = []
+    ids: set[int] = set()
+    for row in rows:
+        rid = _row_id(row) if isinstance(row, dict) else None
+        if rid is None:
+            continue
+        if rid in seen and row != seen[rid]:
+            raise ValueError(f"conflicting source id {rid} across reader pages")
+        if rid <= after:
+            continue
+        if rid in ids:
+            raise ValueError("duplicate source id in reader page")
+        ids.add(rid)
+        fresh.append(row)
+    return sorted(fresh, key=_row_id)
+
+
 class TrafficIndex:
     """The traffic cache over 7 days of the ledgers. Thread-safe; throttled; bounded."""
 
@@ -491,20 +513,20 @@ class TrafficIndex:
 
         Only rows with an integer id strictly past the cursor count, so a reader that repeats a row can never
         count it twice; a short page ends the read; the cursor is the last row kept, so rows past the cap are
-        read at the next refresh rather than skipped."""
+        read at the next refresh rather than skipped. Conflicting replays of ids seen in this drain raise;
+        identical replays are ignored. No cross-refresh payload history is retained."""
         out: list[dict[str, Any]] = []
+        seen: dict[int, dict[str, Any]] = {}
         after = cursor
         while len(out) < MAX_ROWS:
             rows = reader(after, since)
-            if not isinstance(rows, list) or not rows:
-                break
-            fresh = sorted((r for r in rows if isinstance(r, dict) and _row_id(r) is not None and _row_id(r) > after),
-                           key=_row_id)
-            if any(_row_id(a) == _row_id(b) for a, b in zip(fresh, fresh[1:])):
-                raise ValueError("duplicate source id in reader page")
+            fresh = _fresh_rows(rows, after, seen)
             if not fresh:
                 break  # the cursor cannot advance: stop rather than loop forever
-            out.extend(fresh[:MAX_ROWS - len(out)])
+            # Keep owned snapshots: a reader may reuse and mutate its dictionaries between calls.
+            kept = copy.deepcopy(fresh[:MAX_ROWS - len(out)])
+            out.extend(kept)
+            seen.update((r["id"], r) for r in kept)
             after = _row_id(out[-1])
             if len(rows) < PAGE:
                 break
@@ -583,15 +605,15 @@ class TrafficIndex:
 
     def _recount_links(self, window_start: float) -> None:
         try:
-            pairs = self._links_fn()
+            pairs = [] if self._links_fn is None else self._links_fn()
+            if not isinstance(pairs, list):
+                raise ValueError("links source must return a list")
         except Exception as exc:  # noqa: BLE001
             self._strip_links()
             self._src["links"] = {"ok": False, "records": 0, "undated": 0,
                                   "error": _err(f"{type(exc).__name__}: {exc}")}
             return
         dated = []
-        if not isinstance(pairs, list):
-            pairs = []
         for item in pairs:
             if isinstance(item, (list, tuple)) and len(item) == 2:
                 doc_source, link = item
