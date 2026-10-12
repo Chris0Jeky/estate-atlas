@@ -1,10 +1,11 @@
 """Local go-public scan: does anything tracked in this repository look private?
 
-Standard library only. Read-only against git (``ls-files``, ``log``, ``for-each-ref``); it never fetches, writes or
+Standard library only. Read-only against git (``ls-files``, ``ls-tree``, ``cat-file``, ``log``, ``for-each-ref``); it never fetches, writes or
 checks out anything.
 
     python scripts/check_public.py                  scan tracked text files and every tracked file name
-    python scripts/check_public.py --history        scan ``git log -p --all`` text and ref names instead
+    python scripts/check_public.py --committed      scan HEAD blobs and names, ignoring dirty working files
+    python scripts/check_public.py --history        scan ``git log -m -p --all`` text and ref names instead
     python scripts/check_public.py --terms FILE     read the private terms from FILE, not .public-scan.local
 
 Two kinds of check run together:
@@ -18,7 +19,7 @@ Two kinds of check run together:
   digit is tolerated (plurals, numbered forms) except on a term shorter than five characters, which matches as an
   exact word only, so a short private name does not flood the report with ordinary words that begin with it.
   A line ``allow: PATH = TERM`` in the same file accepts that term in that one file (and its name): a reviewed
-  judgement kept next to the private list; the count of accepted hits is always printed. If the file is absent the
+  judgement kept next to the private list; accepted file hits are counted in both tree and history modes, never in author/message metadata. If the file is absent the
   script says so on stderr and still runs the generic patterns.
 
 A hit prints ``path:line: <category>`` (a private term prints ``private-term #N``, N counting the terms in the file,
@@ -28,6 +29,7 @@ credential-style userinfo, not an address, and ``git@host`` is the ssh account n
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_right
 import hashlib
 import os
 import re
@@ -39,7 +41,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from estate_atlas.overlay import fold, leaks  # noqa: E402
+from estate_atlas.overlay import fold  # noqa: E402
+from estate_atlas.check import _git as read_git, partial_clone  # noqa: E402
 
 DEFAULT_TERMS = ".public-scan.local"
 SEPARATOR = re.compile(r"[\s_-]+")
@@ -115,25 +118,41 @@ class Terms:
             self.variants.setdefault(fold(term), index)  # the term itself, literally
             for joiner in (" ", "-", "_", ""):
                 self.variants.setdefault(joiner.join(parts), index)
+        self.patterns = {variant: re.compile(r"(?<![a-z0-9])" + re.escape(variant)
+                         + (r"(?![a-z0-9])" if len(variant) < SHORT_TERM else r"(?![a-z0-9]{2})"))
+                         for variant in self.variants}
         by_term = {fold(term): index for index, term in enumerate(terms, 1)}
         self.allowed = {(path, by_term[fold(term)]) for path, term in allowed if fold(term) in by_term}
         self.accepted = 0
 
     def indexes(self, text: str) -> list[int]:
         """The 1-based term numbers that occur in ``text``, ascending."""
-        if not self.variants:
-            return []
         folded = fold(text)
-        candidates = [variant for variant in self.variants if variant in folded]
-        if not candidates:
-            return []
-        loose = [v for v in candidates if len(v) >= SHORT_TERM]
-        found = set(leaks(text, (), loose)) if loose else set()
-        for variant in candidates:
-            if len(variant) < SHORT_TERM and re.search(
-                    r"(?<![a-z0-9])" + re.escape(variant) + r"(?![a-z0-9])", folded):
-                found.add(variant)
-        return sorted({self.variants[variant] for variant in found})
+        return sorted({index for variant, index in self.variants.items()
+                       if variant in folded and self.patterns[variant].search(folded)})
+
+    def line_hits(self, lines: list[str]) -> dict[int, list[int]]:
+        """Term numbers by starting line, including terms wrapped across whitespace-only lines."""
+        if not self.variants:
+            return {}
+        starts, numbers, chunks = [], [], []
+        offset = 0
+        for number, line in enumerate(lines, 1):
+            chunk = fold(line)
+            if chunk:
+                starts.append(offset)
+                numbers.append(number)
+                chunks.append(chunk)
+                offset += len(chunk) + 1
+        text = " ".join(chunks)
+        hits: dict[int, set[int]] = {}
+        for variant, index in self.variants.items():
+            if variant not in text:
+                continue
+            for match in self.patterns[variant].finditer(text):
+                number = numbers[bisect_right(starts, match.start()) - 1]
+                hits.setdefault(number, set()).add(index)
+        return {number: sorted(indexes) for number, indexes in hits.items()}
 
     def accepts(self, path: str, finding: str) -> bool:
         """True (and counted) when ``finding`` is a private-term hit that the local file accepts for ``path``."""
@@ -173,10 +192,9 @@ def load_terms(path: Path, explicit: bool) -> Terms:
 
 def git(repo: Path, *args: str) -> bytes:
     try:
-        done = subprocess.run(["git", "-c", "core.quotepath=off", "-c", "core.fsmonitor=false", "-C", str(repo),
-                               *args], capture_output=True)
-    except OSError as exc:
-        raise Usage(f"cannot run git: {exc.strerror or type(exc).__name__}") from None
+        done = read_git(repo, "-c", "core.quotepath=off", "-c", "core.fsmonitor=false", *args)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Usage(f"cannot run git: {type(exc).__name__}") from None
     if done.returncode != 0:
         raise Usage(f"git {args[0]} failed in {repo}: {done.stderr.decode('utf-8', 'replace').strip()[:200]}")
     return done.stdout
@@ -198,9 +216,13 @@ def shown(name: str, terms: Terms) -> str:
 
 def scan_text(text: str, terms: Terms):
     """``(line number, finding)`` for every hit in a block of text."""
-    for number, line in enumerate(text.split("\n"), 1):
-        for finding in findings(line, terms):
-            yield number, finding
+    lines = text.split("\n")
+    term_hits = terms.line_hits(lines)
+    for number, line in enumerate(lines, 1):
+        for category, excerpt in generic_hits(line):
+            yield number, f"{category}  [{excerpt}]"
+        for index in term_hits.get(number, []):
+            yield number, f"private-term #{index}"
 
 
 def decode_text(raw: bytes) -> str | None:
@@ -219,15 +241,22 @@ def decode_text(raw: bytes) -> str | None:
     return raw.decode("utf-8", "replace")
 
 
-def scan_tree(repo: Path, terms: Terms) -> int:
+def scan_tree(repo: Path, terms: Terms, *, committed: bool = False) -> int:
+    if partial_clone(repo):
+        raise Usage("scan requires a complete local repository with readable Git configuration")
     # ``ls-files -s`` records are ``<mode> <sha> <stage>\t<path>``. A merge can list one path at several stages;
     # every distinct symlink blob of it is scanned. Gitlinks stay in the name list and are not read.
     entries: dict[str, list[tuple[str, str]]] = {}
-    for record in git(repo, "ls-files", "-s", "-z").decode("utf-8", "replace").split("\0"):
+    listing = (git(repo, "ls-tree", "-r", "--full-tree", "-z", "HEAD") if committed
+               else git(repo, "ls-files", "-s", "-z"))
+    for record in listing.decode("utf-8", "replace").split("\0"):
         if not record:
             continue
         head, path = record.split("\t", 1)
-        mode, sha, _stage = head.split()
+        if committed:
+            mode, _kind, sha = head.split()
+        else:
+            mode, sha, _stage = head.split()
         entries.setdefault(path, []).append((mode, sha))
     names = list(entries)
     hits = 0
@@ -242,10 +271,13 @@ def scan_tree(repo: Path, terms: Terms) -> int:
         # A symlink entry is scanned by the link text Git stores. A link is never followed: a working-tree link at
         # a path is read as its own text, and a regular file at a symlink path is scanned as well as the stored text.
         raws = [git(repo, "cat-file", "blob", sha)
-                for sha in dict.fromkeys(sha for mode, sha in entries[name] if mode == "120000")]
+                for sha in dict.fromkeys(sha for mode, sha in entries[name]
+                                         if mode == "120000" or (committed and mode in {"100644", "100755"}))]
         target = repo / name
         try:
-            if target.is_symlink():  # never followed; the link text is what `git add` would stage
+            if committed:
+                pass  # HEAD blobs only: the index and working files cannot hide or add content
+            elif target.is_symlink():  # never followed; the link text is what `git add` would stage
                 raws.append(os.fsencode(os.readlink(target)))
             elif modes - {"160000"} and not target.is_dir():  # a directory-like entry is skipped
                 raws.append(target.read_bytes())
@@ -274,77 +306,124 @@ def scan_tree(repo: Path, terms: Terms) -> int:
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
+def _git_path(value: str) -> str | None:
+    """Decode Git's C-quoted UTF-8 path, including byte-oriented octal escapes."""
+    if not value.startswith('"'):
+        return value
+    if not re.fullmatch(r'"(?:[^"\\]|\\.)*"', value):
+        return None
+    escapes = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
+    raw = bytearray()
+    i = 1
+    while i < len(value) - 1:
+        char = value[i]
+        if char != "\\":
+            raw.extend(char.encode("utf-8", "replace"))
+            i += 1
+            continue
+        i += 1
+        octal = re.match(r"[0-7]{1,3}", value[i:-1])
+        if octal:
+            number = int(octal.group(), 8)
+            if number > 255:
+                return None
+            raw.append(number)
+            i += len(octal.group())
+        elif value[i] in escapes:
+            raw.append(escapes[value[i]])
+            i += 1
+        else:
+            return None
+    return raw.decode("utf-8", "replace")
+
+
 def diff_header_paths(rest: str) -> list[str]:
-    """The path(s) named by the text after ``diff --git``: one when both sides agree, else both."""
-    if not rest.startswith("a/"):
-        return []  # quoted names only appear for unusual bytes
-    marks = [m.start() for m in re.finditer(" b/", rest)]
-    for mark in marks:
-        left, right = rest[2:mark], rest[mark + 3:]
-        if left == right:
-            return [left]
-    if marks:
-        return [rest[2:marks[0]], rest[marks[0] + 3:]]
-    return []
+    """The path(s) after ``diff --git``, with Git C quoting decoded before matching or allow rules."""
+    candidates = []
+    for match in re.finditer(r' (?=b/|"b/)', rest):
+        left, right = _git_path(rest[:match.start()]), _git_path(rest[match.end():])
+        if left is not None and right is not None and left.startswith("a/") and right.startswith("b/"):
+            names = [left[2:], right[2:]]
+            if names[0] == names[1]:
+                return names[:1]
+            candidates.append(names)
+    return candidates[0] if candidates else []
 
 
 def history_records(log_text: str, terms: Terms):
-    """``(sha, path, line, finding)`` for each hit in a ``git log -p`` stream made with this script's format.
+    """``(sha, path, line, finding)`` in the fixed ``git log -m -p`` format.
 
-    ``line`` is 0 for a hit in a file name. Hunk payload is told from file headers by the line counts of the ``@@``
-    header, never by its first characters, so a payload line such as ``+++ x`` is scanned as content.
+    Hunk counts distinguish payload from headers. Each side of each hunk and each commit message is a
+    separate text block, so wrapped terms match without joining unrelated files, sides or metadata.
     """
     sha = ""
     state = "outside"
     header_line = 0
     path = ""
     old_line = new_line = old_left = new_left = 0
+    old_rows, new_rows, message_rows = [], [], []
+
+    def block(rows, where):
+        for number, finding in scan_text("\n".join(text for _, text in rows), terms):
+            yield sha, where, rows[number - 1][0], finding
+        rows.clear()
+
     for line in log_text.split("\n"):
         if old_left > 0 or new_left > 0:
             if line.startswith("\\"):
                 continue  # "\ No newline at end of file"
             if line[:1] == "+" and new_left > 0:
+                new_rows.append((new_line, line[1:]))
                 new_left -= 1
-                for finding in findings(line[1:], terms):
-                    yield sha, path, new_line, finding
                 new_line += 1
                 continue
             if line[:1] == "-" and old_left > 0:
+                old_rows.append((old_line, line[1:]))
                 old_left -= 1
-                for finding in findings(line[1:], terms):
-                    yield sha, path, old_line, finding
                 old_line += 1
                 continue
             if line[:1] == " " and old_left > 0 and new_left > 0:
-                old_left -= 1  # context line (git can emit them despite -U0)
+                old_rows.append((old_line, line[1:]))
+                new_rows.append((new_line, line[1:]))
+                old_left -= 1
                 new_left -= 1
                 old_line += 1
                 new_line += 1
                 continue
-            old_left = new_left = 0  # malformed or short hunk: treat the line as a header again
+            old_left = new_left = 0
+        yield from block(old_rows, path)
+        yield from block(new_rows, path)
         if line.startswith("\x01"):
+            yield from block(message_rows, "(commit message)")
             sha, state, header_line = line[1:].strip(), "header", 0
+            path = ""
             continue
         if state == "header":
             if line.startswith("\x02"):
+                yield from block(message_rows, "(commit message)")
                 state = "diff"
                 continue
             header_line += 1
-            where = "(author)" if header_line <= 2 else "(commit message)"
-            for finding in findings(line, terms):
-                yield sha, where, header_line, finding
+            if header_line <= 2:
+                for finding in findings(line, terms):
+                    yield sha, "(author)", header_line, finding
+            else:
+                message_rows.append((header_line, line))
             continue
         if state != "diff":
             continue
         if line.startswith("diff --git "):
             named = diff_header_paths(line[len("diff --git "):])
-            if named:
-                path = named[-1]
-                for name in named:
-                    for finding in findings(name, terms):
-                        yield sha, name, 0, finding
+            if not named:
+                raise Usage("cannot decode a history file path")
+            path = named[-1]
+            for name in named:
+                for finding in findings(name, terms):
+                    yield sha, name, 0, finding
         elif line.startswith(("rename from ", "rename to ", "copy from ", "copy to ")):
-            name = line.split(" ", 2)[2]
+            name = _git_path(line.split(" ", 2)[2])
+            if name is None:
+                raise Usage("cannot decode a history file path")
             for finding in findings(name, terms):
                 yield sha, name, 0, finding
         elif line.startswith("@@"):
@@ -353,11 +432,16 @@ def history_records(log_text: str, terms: Terms):
                 old_line, new_line = int(match.group(1)), int(match.group(3))
                 old_left = int(match.group(2)) if match.group(2) is not None else 1
                 new_left = int(match.group(4)) if match.group(4) is not None else 1
+    yield from block(old_rows, path)
+    yield from block(new_rows, path)
+    yield from block(message_rows, "(commit message)")
 
 
 def scan_history(repo: Path, terms: Terms) -> int:
+    if partial_clone(repo):
+        raise Usage("scan requires a complete local repository with readable Git configuration")
     refs = git(repo, "for-each-ref", "--format=%(refname)").decode("utf-8", "replace").splitlines()
-    log = git(repo, "log", "-p", "--all", "-U0", "--no-color", "--no-ext-diff", "--no-textconv",
+    log = git(repo, "log", "-m", "-p", "--all", "-U0", "--no-color", "--no-ext-diff", "--no-textconv",
               "--src-prefix=a/", "--dst-prefix=b/", "--inter-hunk-context=0", "--no-renames",
               "--format=%x01%H%n%an <%ae>%n%cn <%ce>%n%B%x02").decode("utf-8", "replace")
     hits = 0
@@ -366,20 +450,26 @@ def scan_history(repo: Path, terms: Terms) -> int:
             print(f"{shown(ref, terms)}:0: {finding} (ref name)")
             hits += 1
     seen: set[tuple[str, str, str, bool]] = set()
+    reported: set[tuple[str, str, str, bool]] = set()
     per_category: Counter[str] = Counter()
     commits_hit: set[str] = set()
-    commits = log.count("\x01")
+    commits = len(set(re.findall(r"^\x01([0-9a-f]{40,64})$", log, re.MULTILINE)))
     for sha, path, number, finding in history_records(log, terms):
         category = finding.split("  [")[0]
         key = (sha, path, category, number == 0)
         if key in seen:
             continue
         seen.add(key)
+        if path not in {"(author)", "(commit message)"} and terms.accepts(path, finding):
+            continue
+        reported.add(key)
         print(f"{sha[:12]} {shown(path, terms)}:{number}: {finding}" + (" (file name)" if number == 0 else ""))
         hits += 1
         commits_hit.add(sha)
-    for category in sorted({key[2] for key in seen}):
-        per_category[category] = len({key[0] for key in seen if key[2] == category})
+    for category in sorted({key[2] for key in reported}):
+        per_category[category] = len({key[0] for key in reported if key[2] == category})
+    if terms.accepted:
+        print(f"history: {terms.accepted} hit(s) accepted by allow lines")
     if hits:
         print(f"history: {hits} hit(s) in {len(commits_hit)} of {commits} commit(s), {len(refs)} refs checked")
         for category, count in sorted(per_category.items()):
@@ -392,7 +482,9 @@ def scan_history(repo: Path, terms: Terms) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="check_public.py", description="Scan tracked files (or history) for "
                                      "private-looking content before going public.")
-    parser.add_argument("--history", action="store_true", help="scan git log -p --all and ref names, not the tree")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--history", action="store_true", help="scan git log -m -p --all and ref names")
+    modes.add_argument("--committed", action="store_true", help="scan HEAD blobs and names, not working files")
     parser.add_argument("--terms", metavar="FILE", help=f"private terms file (default: {DEFAULT_TERMS} at the root)")
     parser.add_argument("--repo", metavar="DIR", default=".", help="the repository to scan (default: the current one)")
     args = parser.parse_args(argv)  # an unknown option exits 2 here
@@ -400,7 +492,7 @@ def main(argv: list[str] | None = None) -> int:
         top = git(Path(args.repo), "rev-parse", "--show-toplevel").decode("utf-8", "replace").strip()
         repo = Path(top)
         terms = load_terms(Path(args.terms) if args.terms else repo / DEFAULT_TERMS, explicit=bool(args.terms))
-        return scan_history(repo, terms) if args.history else scan_tree(repo, terms)
+        return scan_history(repo, terms) if args.history else scan_tree(repo, terms, committed=args.committed)
     except Usage as exc:
         print(f"check_public: {exc}", file=sys.stderr)
         return 2
