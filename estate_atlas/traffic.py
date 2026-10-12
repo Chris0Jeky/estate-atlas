@@ -270,6 +270,8 @@ def route(record: dict[str, Any], rules: Rules, index: dict[str, Any],
             return None, "unrouted", "unmapped"
         if len(comps) == 1:
             return None, "internal", None
+        if len(comps) > 2:
+            return None, "ambiguous", "ambiguous-inference"
         cands = [f.get("id") for f in flows
                  if isinstance(f, dict) and f.get("from") in comps
                  and f.get("to") in comps and f.get("from") != f.get("to")]
