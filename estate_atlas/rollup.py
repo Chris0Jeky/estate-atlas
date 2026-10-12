@@ -122,7 +122,9 @@ class TrafficHistory:
         no flows): nothing is written and `last_day` does not advance, so the
         days stay missing until a later run can route them.
         A routing revision change skips the write; source failures, duplicate
-        ids and capped reads raise before any days are sealed.
+        ids and capped reads raise before any days are sealed. A concurrent writer
+        that advances this database's sealed-day watermark makes this call skip with
+        zero writes, so a stale calculation cannot mix rows or move last_day backwards.
 
         With by_day=True, journal/event readers must accept (after_id, since, until)
         and return only rows in the half-open UTC interval [since, until). Missing
@@ -161,6 +163,8 @@ class TrafficHistory:
                 # nothing to route: the whole days are already stored, so seal them in one transaction
                 self._con.execute("BEGIN IMMEDIATE")
                 try:
+                    if self._meta("last_day") != last:
+                        return self._skip_changed_history(t0)
                     self._seal(first, yesterday)
                     self._con.execute("COMMIT")
                 except BaseException:
@@ -200,6 +204,8 @@ class TrafficHistory:
             written = 0
             self._con.execute("BEGIN IMMEDIATE")
             try:
+                if self._meta("last_day") != last:
+                    return self._skip_changed_history(t0)
                 if not index.built or index.flow_count == 0 or index.routing_revision is not revision:
                     # another thread's refresh changed the rules while this one was routing: the counts above
                     # may be partial, so seal nothing and let a later run roll the days up
@@ -214,6 +220,14 @@ class TrafficHistory:
                 raise
             return {"days_written": len(missing), "rows_written": written,
                     "ms": (time.perf_counter() - t0) * 1000.0}
+
+    def _skip_changed_history(self, started: float) -> dict[str, Any]:
+        """Release the write lock without publishing counts based on a stale watermark."""
+        assert self._con is not None
+        self._con.execute("ROLLBACK")
+        return {"days_written": 0, "rows_written": 0,
+                "ms": (time.perf_counter() - started) * 1000.0,
+                "skipped": "history changed during rollup"}
 
     def _abort(self) -> None:
         """Roll back whatever is open, so a failed COMMIT never wedges later rollups; the caller re-raises the
