@@ -25,6 +25,43 @@ It is a standard-library Python package with no runtime dependencies. It reads y
 The evidence checks use read-only git commands and never fetch, write or check out anything. Outputs are
 byte-stable for the same inputs, so you can diff them and fail CI when they change unexpectedly.
 
+This is the fictional shop in `examples/shop`, drawn by `render mermaid` from `examples/shop/atlas.json`:
+
+```mermaid
+flowchart TB
+    subgraph l_edge ["Edge"]
+        c_web["Storefront<br/>shop"]
+    end
+    subgraph l_services ["Services"]
+        c_api["Shop API<br/>shop"]
+        c_worker["Fulfilment worker<br/>shop"]
+    end
+    subgraph l_data ["Data"]
+        c_db["Orders database<br/>shop"]
+        c_queue["Job queue<br/>shop"]
+    end
+    subgraph l_external ["External"]
+        c_payments["Payments provider<br/>external:payments"]
+    end
+    classDef live fill:#dcfce7,stroke:#166534,color:#14532d
+    classDef partial fill:#fef3c7,stroke:#92400e,color:#451a03
+    classDef planned fill:#e0e7ff,stroke:#3730a3,color:#1e1b4b
+    classDef retired fill:#f1f5f9,stroke:#475569,color:#0f172a
+    class c_api live
+    class c_db live
+    class c_payments live
+    class c_queue live
+    class c_web live
+    class c_worker live
+    c_api -->|orders-schema| c_db
+    c_api -->|charge-api| c_payments
+    c_api -->|job-message| c_queue
+    c_queue -->|job-message| c_worker
+    c_web -->|shop-http| c_api
+    c_worker -->|worker-heartbeat| c_queue
+    c_worker -->|orders-schema| c_db
+```
+
 ## Features
 
 - **An atlas format you can review.** `estate-atlas@3` (and `@2`) holds layers, components, contracts, flows,
@@ -34,6 +71,8 @@ byte-stable for the same inputs, so you can diff them and fail CI when they chan
 - **Evidence checks against git.** `check` confirms that each referenced file exists and contains its anchor text at
   `origin/<default branch>` of the matching checkout, or in the working tree with `--worktree`. Missing evidence is
   drift (exit 1). A repo it cannot resolve makes the report `partial` (exit 0), so an unresolved repo never looks green.
+  `export` writes the same atlas as `estate-atlas-export@3`, with a GitHub URL on every evidence, expect, vocabulary
+  and receipt revision.
 - **Evidence levels.** A part can claim how far it has been proven on an ordered ladder, from `source` up to
   `accepted`. The claim has to be backed by passed receipts that pin commits on the default branch. `check` reports
   over-claims (exit 1) and under-claims. estate-atlas records receipts. It never runs the checks they describe.
@@ -42,23 +81,40 @@ byte-stable for the same inputs, so you can diff them and fail CI when they chan
   exactly one flow is inferred onto it. The rest is reported as `internal`, `unrouted` or `ambiguous`. Heartbeats
   can be declared as pulses, so they never count as traffic. A live flow that has a rule but sees no crossings is
   listed as silent.
-- **Renderers.** `render html` writes one offline page with an evidence view. It has inline scripts and styles and
-  makes no network requests. `render mermaid` writes a flowchart in a `flows` or `components` view. `docs write`
-  fills marked blocks in a Markdown file (`glance`, `owners`, `layers` and `traffic`) and writes an
-  `atlas-glance.svg` beside it. `docs check` fails when those blocks have gone stale.
+- **Renderers.** `render html` writes one offline page with an evidence view. Scripts and styles are inline; the page
+  loads no external assets. Clickable GitHub links are emitted for evidence that names a remote. `render mermaid`
+  writes a flowchart in a `flows` or `components` view. `docs write` fills marked blocks in a Markdown file
+  (`glance`, `owners`, `layers` and `traffic`) and writes an `atlas-glance.svg` beside it. `docs check` fails when
+  those blocks have gone stale.
 - **Explanations.** `explain` describes one component in plain English, using only facts from the atlas. Add
   `--traffic` for volumes from `route`, or `--live` for a running-now line from a JSON file of your own facts.
 - **Tours, including public ones.** `tour --md` writes a walk through every layer and flow. `tour --overlay` writes
   the same tour in public wording from an overlay file. The overlay has to cover every layer, component, contract and
   flow, and the tour refuses to write anything (exit 2) if a private term would leak. Keep the overlay file with the
   private atlas. `tour --check` fails when a saved tour is stale.
-- **Strict input.** Atlas and record files must be strict UTF-8 JSON, with or without a leading BOM. Duplicate keys,
-  `NaN` and `Infinity` are rejected. JSONL input has per-line and per-file byte budgets and a record limit per file.
-  A file that goes over one of them fails instead of being silently truncated.
+- **Strict input.** Atlas and record files must be strict UTF-8 JSON, with or without a leading UTF-8 BOM. Duplicate
+  keys, `NaN` and `Infinity` are rejected. JSONL input has per-line and per-file byte budgets and a record limit per
+  file. A file that goes over one of them fails instead of being silently truncated.
 - **Publishing checks.** `scripts/check_public.py` scans the working tree, the committed content or the full git
   history for private terms, home-directory paths and e-mail addresses. `scripts/qualify_wheel.py` builds the wheel,
   installs it into a clean virtual environment with no network access, runs the consumer proof, and writes a JSON
   receipt.
+
+The CLI is `python -m estate_atlas <verb>`, or `estate-atlas` after `pip install .`. Exit codes: 0 ok, 1 drift or
+stale, 2 invalid input.
+
+| Verb | What it does |
+| --- | --- |
+| `validate` | Check that the atlas file is well formed. |
+| `check` | Prove the evidence and proof receipts against git. |
+| `export` | The atlas with a hosted link on every reference. |
+| `render` | Offline HTML, or Mermaid (`flows` or `components`). |
+| `docs` | Write or check marked Markdown blocks and the glance SVG. |
+| `explain` | One component in plain English. |
+| `tour` | A walk through every layer and flow. `--overlay` publishes it. |
+| `route` | Route journal, event and link files onto flows (`estate-atlas-traffic@1`). |
+
+`rollup.py` has no verb. It is a library: daily counts in SQLite, then weekly series and fading/surging flags.
 
 ## Architecture
 
@@ -151,6 +207,18 @@ Evidence: claimed unit; passed receipts reach integrated.
 Fed by Job queue (A job is waiting and a worker is free.).
 Feeds Job queue (Every minute the worker reports that it is alive.). Feeds Orders database (A job finishes and its result is stored.).
 It reads Job message and Orders schema.
+```
+
+`route` on the sample journal and events lights `web-to-api`, `api-to-queue`, `queue-to-worker` and `api-to-db` as
+hot, `worker-to-db` as warm, `worker-heartbeat` as pulse, and `api-to-payments` as silent: a live flow with a rule
+and no crossings. `web-to-api` has no declared rule; those crossings are inferred from the components' instances.
+See [examples/shop/README.md](examples/shop/README.md).
+
+A second example, [examples/workspace](examples/workspace/README.md), is a planned human-workspace design. Every
+component and flow is `planned`, there is no traffic, and `validate` is the command that applies:
+
+```sh
+python -m estate_atlas validate examples/workspace/atlas.json
 ```
 
 To install the console script instead of using `python -m`, run `pip install .` from the repository root. Then
@@ -290,7 +358,8 @@ Keep changes small, with tests, and one pull request per change. The rules that 
 
 - Standard library only, on Python 3.11 or later. No runtime dependencies.
 - Outputs are deterministic. Renderers and generated blocks must be byte-stable for the same inputs.
-- The tool is read-only against git. `check` reads with `git show` and never fetches, writes or checks out.
+- The tool is read-only against git. `check` never fetches, writes or checks out. It reads with `git remote`,
+  `config`, `rev-parse`, `ls-tree`, `cat-file` and `merge-base`.
 - Never put private repository, host, person or path names in code, tests, examples or docs. Examples are
   fictional, and `examples/shop` is the reference.
 
@@ -301,6 +370,8 @@ Run the tests and the public scan before you open a PR. The full rules are in [A
 - [Design](docs/DESIGN.md): the format, evidence rules, routing, the public overlay and the CLI reference.
 - [Qualification](docs/QUALIFICATION.md): how to run the consumer and installed-package proofs, and what their results do and do not prove.
 - [Origin identity](docs/ORIGIN_IDENTITY.md): which git remotes count as GitHub evidence.
+- [Shop example](examples/shop/README.md): the fictional storefront used throughout this README.
+- [Workspace example](examples/workspace/README.md): a planned human-workspace design, all `planned`, no traffic.
 - [Docs site](https://chris0jeky.github.io/estate-atlas/): the rendered docs.
 - [Interactive example atlas](https://chris0jeky.github.io/estate-atlas/example/shop-atlas.html): the fictional shop, rendered with the package's own HTML renderer.
 - [License](LICENSE): GPL-3.0-only.
