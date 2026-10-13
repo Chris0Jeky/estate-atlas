@@ -24,8 +24,9 @@ blocks that your docs can embed, and plain-English explanations. If you point it
 them onto the flows, so you can see which flows carry traffic and which have gone quiet.
 
 It is a standard-library Python package with no runtime dependencies. It reads your atlas and your git checkouts.
-The evidence checks use read-only git commands and never fetch, write or check out anything. Outputs are
-byte-stable for the same inputs, so you can diff them and fail CI when they change unexpectedly.
+The evidence checks use read-only git commands and never fetch, write or check out anything. Rendered documents
+and generated blocks are byte-stable for the same inputs, so you can diff them and fail CI when they change.
+Live index snapshots also contain measured timings and clock-dependent data.
 
 This is the fictional shop in `examples/shop`, drawn by `render mermaid` from `examples/shop/atlas.json`:
 
@@ -72,22 +73,24 @@ flowchart TB
   carry `expect` references.
 - **Evidence checks against git.** `check` confirms that each referenced file exists and contains its anchor text at
   `origin/<default branch>` of the matching checkout, or in the working tree with `--worktree`. Missing evidence is
-  drift (exit 1). A repo it cannot resolve makes the report `partial` (exit 0), so an unresolved repo never looks green.
+  drift (exit 1). Unavailable repositories are reported as unresolved; absent other drift, the report is `partial`
+  (exit 0). Consumers must inspect the report: exit 0 alone does not establish complete source coverage.
   `export` writes the same atlas as `estate-atlas-export@3`, with a GitHub URL on every evidence, expect, vocabulary
   and receipt revision.
 - **Evidence levels.** A part can claim how far it has been proven on an ordered ladder, from `source` up to
   `accepted`. The claim has to be backed by passed receipts that pin commits on the default branch. `check` reports
-  over-claims (exit 1) and under-claims. estate-atlas records receipts. It never runs the checks they describe.
+  over-claims (exit 1) and under-claims. With `--worktree`, pinned commits need only exist in the repository.
+  estate-atlas records receipts. It never runs the checks they describe.
 - **Traffic routing.** `route` takes JSONL journal and event files, plus an optional links file, and puts each record
   on a flow. Declared rules win. Otherwise the record's endpoints are mapped to components, and a record that joins
-  exactly one flow is inferred onto it. The rest is reported as `internal`, `unrouted` or `ambiguous`. Heartbeats
-  can be declared as pulses, so they never count as traffic. A live flow that has a rule but sees no crossings is
-  listed as silent.
+  exactly one flow is inferred onto it. Events need exactly two distinct mapped components for inference. The rest
+  is reported as `internal`, `unrouted` or `ambiguous`. Heartbeats can be declared as pulses: they count as
+  observations, but not business volume. A live flow with a rule and neither volume nor pulses is listed as silent.
 - **Renderers.** `render html` writes one offline page with an evidence view. Scripts and styles are inline; the page
   loads no external assets. Clickable GitHub links are emitted for evidence that names a remote. `render mermaid`
   writes a flowchart in a `flows` or `components` view. `docs write` fills marked blocks in a Markdown file
   (`glance`, `owners`, `layers` and `traffic`) and writes an `atlas-glance.svg` beside it. `docs check` fails when
-  those blocks have gone stale.
+  generated architecture blocks or the overview SVG have gone stale; it does not compare live traffic totals.
 - **Explanations.** `explain` describes one component in plain English, using only facts from the atlas. Add
   `--traffic` for volumes from `route`, or `--live` for a running-now line from a JSON file of your own facts.
 - **Tours, including public ones.** `tour --md` writes a walk through every layer and flow. `tour --overlay` writes
@@ -97,8 +100,9 @@ flowchart TB
 - **Strict input.** Atlas and record files must be strict UTF-8 JSON, with or without a leading UTF-8 BOM. Duplicate
   keys, `NaN` and `Infinity` are rejected. JSONL input has per-line and per-file byte budgets and a record limit per
   file. A file that goes over one of them fails instead of being silently truncated.
-- **Publishing checks.** `scripts/check_public.py` scans the working tree, the committed content or the full git
-  history for private terms, home-directory paths and e-mail addresses. `scripts/qualify_wheel.py` builds the wheel,
+- **Publishing checks.** `scripts/check_public.py` scans tracked working files, committed content, or text diffs
+  and metadata in local Git history for private-looking content; scope limits are listed below.
+  `scripts/qualify_wheel.py` builds the wheel,
   installs it into a clean virtual environment with no network access, runs the consumer proof, and writes a JSON
   receipt.
 
@@ -169,7 +173,7 @@ flowchart LR
 
 A few things to know when you read the code:
 
-- `traffic.py` is a pure engine. The caller injects the readers for journal, event, link and atlas data.
+- The routing core in `traffic.py` is pure. Its live index receives journal, event, link and atlas readers.
   `route_files` is the file-backed wrapper that the `route` verb uses.
 - `rollup.py` has no CLI verb. It is a library: `TrafficHistory` keeps daily counts in SQLite, and `weekly` and
   `flags` work on those counts.
@@ -292,7 +296,7 @@ The full format is described in [docs/DESIGN.md](docs/DESIGN.md). Start with `va
   `scripts/qualify_wheel.py` records the source HEAD and dirty status with git, then builds and installs the wheel
   in a clean virtual environment with pip.
 - **Packaging.** setuptools (`setuptools>=68`) builds the wheel and provides the `estate-atlas` console script.
-- **Output formats.** Self-contained HTML, Mermaid, SVG and Markdown. Every output is deterministic.
+- **Output formats.** Self-contained HTML, Mermaid, SVG and Markdown, deterministic for the same supplied data.
 - **CI.** GitHub Actions runs the full suite on Ubuntu with Python 3.11 and on Windows with Python 3.13. A separate
   workflow stages the docs site and runs its tests, and a push to `main` deploys it to GitHub Pages with Jekyll.
 
@@ -307,8 +311,9 @@ Open work, from the issue tracker:
 - [#72](https://github.com/Chris0Jeky/estate-atlas/issues/72): `check` starts three git processes per evidence file,
   which is slow on Windows. A draft PR, [#83](https://github.com/Chris0Jeky/estate-atlas/pull/83), adds an evidence
   batching helper that is not wired into the checker yet.
-- [#71](https://github.com/Chris0Jeky/estate-atlas/issues/71): review follow-ups on duplicate IDs in file routes,
-  links strictness parity, the `READ_MAX` boundary and the duck-typed index.
+- [#71](https://github.com/Chris0Jeky/estate-atlas/issues/71): a single day above the rollup row budget still needs
+  a resumable read strategy. Duplicate-ID checks, source-health contracts and rollback throttling are implemented;
+  [#87](https://github.com/Chris0Jeky/estate-atlas/pull/87) also prevents partial ingestion of invalid numeric timestamps.
 
 Known limits, as documented in the design:
 
