@@ -545,6 +545,13 @@ class TrafficIndex:
             after = _row_id(out[-1])
             if len(rows) < PAGE:
                 break
+        # Validate the entire admitted source before the caller can publish any crossings.
+        # A later NaN/infinity or overflowing integer must not leave earlier rows counted
+        # while the cursor remains unchanged, which would count them again on retry.
+        for row in out:
+            at = row.get("at")
+            if isinstance(at, (int, float)) and not isinstance(at, bool) and parse_at(at) is None:
+                raise ValueError(f"source id {row['id']}: timestamp must be finite")
         return out, after
 
     def _read_journal(self, window_start: float, incremental: bool) -> None:
