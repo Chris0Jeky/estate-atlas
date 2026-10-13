@@ -1,6 +1,6 @@
 # estate-atlas
 
-<p align="center"><img src="docs/assets/estate-atlas-loop.svg" alt="estate-atlas workflow, animated" width="100%"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/Chris0Jeky/estate-atlas/main/docs/assets/estate-atlas-loop.svg" alt="estate-atlas workflow, animated" width="100%"></p>
 
 **Your architecture as checked data.**
 
