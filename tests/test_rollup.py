@@ -570,6 +570,19 @@ class RobustRollupTests(unittest.TestCase):
             self.roll(journal=lambda a, s: [r for r in rows if r["id"] > a][:2])
         self.assertEqual(self.hist.read_all()[0]["crossings"], 4)
 
+    def test_retention_trims_days_stored_to_the_rows_kept(self):
+        hist, tmp, index, jr, er, lf = make_store(journal=[jrow(1, day_at(D1))])
+        try:
+            hist.rollup(index, jr, er, lf, NOW)
+            self.assertEqual(len(hist.read_all()), 1)
+            later = NOW + (H.RETENTION_DAYS + 50) * DAY
+            hist.rollup(index, jr, er, lf, later)
+            self.assertEqual(hist.read_all(), [])  # the old row aged out
+            self.assertEqual(hist.days_stored(), H.RETENTION_DAYS)  # no history is claimed beyond retention
+        finally:
+            hist.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_nonfinite_link_times_are_not_daily_crossings(self):
         for stamp in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(stamp=stamp):

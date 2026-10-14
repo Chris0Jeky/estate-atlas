@@ -263,6 +263,8 @@ class TrafficHistory:
         self._seal(first, yesterday)
         cutoff = _day_of(today_start - RETENTION_DAYS * DAY_S)
         self._con.execute("DELETE FROM flow_day WHERE day < ?", (cutoff,))
+        # the days just deleted are no longer history: keep days_stored() to the span still held
+        self._con.execute("UPDATE meta SET value = ? WHERE key = 'first_day' AND value < ?", (cutoff, cutoff))
         return written
 
     def _paged(self, reader: Any, since: float) -> list[dict[str, Any]]:
