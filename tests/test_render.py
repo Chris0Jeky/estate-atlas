@@ -126,6 +126,23 @@ class AtlasRenderTests(unittest.TestCase):
         self.assertEqual(render.render_mermaid(atlas, "components"),
                          render.render_mermaid(atlas, "components"))
 
+    def test_all_tables_have_named_keyboard_scroll_containers(self) -> None:
+        doc = fixture_atlas()
+        doc["schema"] = "estate-atlas@3"
+        doc["components"][0]["proof"] = {"claim": "source", "receipts": []}
+        doc["vocabularies"] = [{"id": "node-kinds", "title": 'Kinds "quoted"', "owner": "c-web",
+                                "source": {"repo": "shop", "path": "kinds.json",
+                                           "select": "kinds/*/kind"},
+                                "terms": [{"term": "order", "means": "A customer order."}]}]
+        page = render.render_html(self.parsed(doc))
+        labels = re.findall(
+            r'<div class="table-scroll" tabindex="0" role="region" aria-label="([^"]+)">'
+            r'<table>.*?</table></div>', page, re.DOTALL)
+        self.assertCountEqual(labels, ["Evidence", "Contracts", "Vocabulary: Kinds &quot;quoted&quot;"])
+        self.assertEqual(len(labels), page.count("<table>"))
+        self.assertIn("overflow-x:auto", render.CSS_TEXT)
+        self.assertIn("th,td{overflow-wrap:anywhere}", render.CSS_TEXT)
+
     def test_embedded_json_round_trips_without_raw_close(self) -> None:
         atlas = self.parsed()
         page = render.render_html(atlas)
