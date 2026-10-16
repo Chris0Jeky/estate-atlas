@@ -16,8 +16,10 @@ complete admitted prefix. The callback's dictionaries are not modified by valida
 Missing, boolean and nonnumeric ledger timestamps retain their existing skip behavior. In
 particular, injected ledger callbacks must normalize ISO timestamp strings themselves. This is
 different from the file adapter, which already parses ISO timestamps and rejects invalid strict
-JSON or unrepresentable numeric input before producing a snapshot. The `parse_at` helper and
-links callback behavior are unchanged by the ledger validation rule.
+JSON or unrepresentable numeric input before producing a snapshot. The links callback is not a
+cursor-based ledger: a link whose numeric `at` is NaN, infinite or out of the finite-float range is
+skipped on its own and is neither counted nor reported as undated (#88). For every source, a row
+dated after the refresh time is left out until the clock reaches it (#88).
 
 This is atomic rejection of invalid numeric timestamps within one admitted source read, not a
 transaction spanning every source or protection against arbitrary failures during user-defined
