@@ -822,12 +822,14 @@ z-index:30}
 #panel a{color:var(--accent)}
 .gapgroup{margin:12px 20px}
 .gapgroup h3{text-transform:capitalize}
-table{border-collapse:collapse;margin:12px 20px;max-width:calc(100% - 40px)}
+.table-scroll{overflow-x:auto;margin:12px 20px}
+table{border-collapse:collapse;max-width:100%}
 th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;font-size:.9rem}
 a{color:var(--accent)}
 :focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 @media (prefers-reduced-motion: reduce){*{transition:none !important;animation:none !important}}
 @media (max-width: 700px){
+th,td{overflow-wrap:anywhere}
 #edges{display:none}
 .cards{grid-template-columns:1fr}
 #panel{left:0;right:0;top:auto;bottom:0;width:100%;max-height:80%;
@@ -1180,8 +1182,9 @@ def _evidence_html(atlas: dict[str, Any], checked: dict[str, dict[str, Any]]) ->
     return (
         "<p>Ladder, lowest first: %s. A level counts only when it and every level below it have a passed receipt; "
         "a check also resolves every receipt revision in git.</p>"
+        '<div class="table-scroll" tabindex="0" role="region" aria-label="Evidence">'
         "<table><thead><tr><th>Part</th><th>Claimed</th><th>Receipts reach</th><th>Proven (check)</th>"
-        "<th>Receipts</th></tr></thead><tbody>%s</tbody></table>"
+        "<th>Receipts</th></tr></thead><tbody>%s</tbody></table></div>"
         % (html.escape(", ".join(ladder)), "".join(rows)))
 
 
@@ -1335,10 +1338,11 @@ def render_html(atlas: dict[str, Any],
                     drift_html += "<p>%s</p>" % (html.escape(str(why)),)
         vocab_sections.append(
             '<section class="vocab"><h3>%s%s</h3><p>Owner: %s | Source: %s</p>'
+            '<div class="table-scroll" tabindex="0" role="region" aria-label="Vocabulary: %s">'
             '<table><thead><tr><th>Term</th><th>Meaning</th></tr></thead>'
-            '<tbody>%s</tbody></table>%s</section>'
+            '<tbody>%s</tbody></table></div>%s</section>'
             % (html.escape(vocab["title"]), pill_html,
-               html.escape(owner_title), src_html, term_rows, drift_html)
+               html.escape(owner_title), src_html, html.escape(vocab["title"]), term_rows, drift_html)
         )
     vocab_html = "".join(vocab_sections)
 
@@ -1359,9 +1363,10 @@ def render_html(atlas: dict[str, Any],
                html.escape(consumers), ev)
         )
     contracts_html = (
+        '<div class="table-scroll" tabindex="0" role="region" aria-label="Contracts">'
         "<table><thead><tr><th>Contract</th><th>Format</th><th>Status</th>"
         "<th>Producer</th><th>Consumers</th><th>Evidence</th></tr></thead>"
-        "<tbody>%s</tbody></table>" % "".join(contract_rows)
+        "<tbody>%s</tbody></table></div>" % "".join(contract_rows)
     )
 
     flow_rows = []
