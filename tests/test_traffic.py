@@ -776,8 +776,9 @@ class TrafficWindowRegressionTests(unittest.TestCase):
         ti.refresh()
         self.assertEqual(ti.snapshot()["coverage"]["records"], 4)
 
-    def test_invalid_numeric_rows_do_not_discard_valid_rows(self):
-        for source in T.SOURCES:
+    def test_invalid_numeric_links_skip_only_that_link(self):
+        # Journal and events keep #87's atomic rejection (tests/test_timestamp_ingestion.py).
+        for source in ("links",):
             for stamp in (10**400, float("inf"), float("nan")):
                 with self.subTest(source=source, stamp=str(stamp)):
                     rows = [{"id": 1, "at": NOW}, {"id": 2, "at": stamp},

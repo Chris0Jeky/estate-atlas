@@ -1,4 +1,4 @@
-"""Bad numeric ledger timestamps are skipped without discarding valid sibling rows."""
+"""A bad numeric ledger timestamp must not partially publish or advance a source."""
 from __future__ import annotations
 
 import copy
@@ -23,7 +23,7 @@ class TimestampIngestionTests(unittest.TestCase):
         template = JOURNAL if source == 'journal' else EVENT
         return [dict(template, id=1), dict(template, id=2, at=bad)]
 
-    def test_invalid_numeric_timestamp_skips_record_and_keeps_other_sources_usable(self):
+    def test_invalid_numeric_timestamp_rejects_whole_source_and_keeps_other_sources_usable(self):
         for source in ('journal', 'events'):
             for label, bad in [('nan', float('nan')), ('positive infinity', float('inf')),
                                ('negative infinity', -float('inf')), ('overflow', 10 ** 400)]:
@@ -33,15 +33,15 @@ class TimestampIngestionTests(unittest.TestCase):
                                        links=lambda: [LINK])
                     self.assertFalse(cache.refresh()['throttled'])
                     snapshot = cache.snapshot(flow='request')
-                    self.assertTrue(snapshot['sources'][source]['ok'])
-                    self.assertIsNone(snapshot['sources'][source]['error'])
-                    self.assertEqual(snapshot['sources'][source]['records'], 1)
+                    self.assertFalse(snapshot['sources'][source]['ok'])
+                    self.assertIn('timestamp', snapshot['sources'][source]['error'])
+                    self.assertEqual(snapshot['sources'][source]['records'], 0)
                     self.assertTrue(snapshot['sources']['links']['ok'])
-                    self.assertEqual(snapshot['coverage']['records'], 2)
-                    self.assertCountEqual([r['source'] for r in snapshot['records']], [source, 'links'])
-                    self.assertEqual(getattr(cache, '_' + ('event' if source == 'events' else source) + '_cursor'), 2)
+                    self.assertEqual(snapshot['coverage']['records'], 1)
+                    self.assertEqual([r['source'] for r in snapshot['records']], ['links'])
+                    self.assertEqual(getattr(cache, '_' + ('event' if source == 'events' else source) + '_cursor'), 0)
 
-    def test_bad_later_page_does_not_discard_earlier_pages(self):
+    def test_bad_later_page_cannot_publish_earlier_pages(self):
         for source in ('journal', 'events'):
             with self.subTest(source=source), patch.object(traffic, 'PAGE', 1):
                 rows = self.rows(source, float('nan'))
@@ -52,11 +52,11 @@ class TimestampIngestionTests(unittest.TestCase):
                 cache = self.cache(source, reader)
                 cache.refresh()
                 snapshot = cache.snapshot()
-                self.assertTrue(snapshot['sources'][source]['ok'])
-                self.assertEqual(snapshot['coverage']['records'], 1)
+                self.assertFalse(snapshot['sources'][source]['ok'])
+                self.assertEqual(snapshot['coverage']['records'], 0)
                 self.assertEqual(calls[:2], [0, 1])
 
-    def test_invalid_increment_advances_cursor_without_double_counting(self):
+    def test_failed_increment_preserves_existing_counts_and_recovery_does_not_double_count(self):
         for source in ('journal', 'events'):
             with self.subTest(source=source):
                 template = JOURNAL if source == 'journal' else EVENT
@@ -65,15 +65,19 @@ class TimestampIngestionTests(unittest.TestCase):
                 cache.refresh()
                 rows.extend([dict(template, id=2), dict(template, id=3, at=float('inf'))])
                 self.clock += 20
+                baseline = cache.snapshot(flow='request')  # Compare at the same wall time.
                 cache.refresh()
-                snapshot = cache.snapshot()
-                self.assertTrue(snapshot['sources'][source]['ok'])
-                self.assertEqual(snapshot['coverage']['records'], 2)
-                self.assertEqual(getattr(cache, '_' + ('event' if source == 'events' else source) + '_cursor'), 3)
-                rows.append(dict(template, id=4))
+                rejected = cache.snapshot(flow='request')
+                self.assertFalse(rejected['sources'][source]['ok'])
+                for key in ('coverage', 'flows', 'records'):
+                    self.assertEqual(rejected[key], baseline[key], key)
+                self.assertEqual(getattr(cache, '_' + ('event' if source == 'events' else source) + '_cursor'), 1)
+                rows[-1]['at'] = AT
                 self.clock += 20
                 cache.refresh()
-                self.assertEqual(cache.snapshot()['coverage']['records'], 3)
+                recovered = cache.snapshot()
+                self.assertTrue(recovered['sources'][source]['ok'])
+                self.assertEqual(recovered['coverage']['records'], 3)
                 self.clock += 20
                 cache.refresh()
                 self.assertEqual(cache.snapshot()['coverage']['records'], 3)
@@ -110,21 +114,21 @@ class TimestampIngestionTests(unittest.TestCase):
                 self.assertEqual(cache.snapshot()['coverage']['records'], 1)
                 self.clock += 20
                 cache.refresh()
-                self.assertTrue(cache.snapshot()['sources'][source]['ok'])
+                self.assertFalse(cache.snapshot()['sources'][source]['ok'])
                 self.assertEqual(cache.snapshot()['coverage']['records'], 1)
-                self.assertEqual(getattr(cache, '_' + ('event' if source == 'events' else source) + '_cursor'), 2)
+                self.assertEqual(getattr(cache, '_' + ('event' if source == 'events' else source) + '_cursor'), 1)
 
-    def test_invalid_timestamp_skip_is_repeatable_without_recounting(self):
+    def test_invalid_timestamp_rejection_is_repeatable_until_producer_repairs_it(self):
         for source in ('journal', 'events'):
             with self.subTest(source=source):
                 rows = self.rows(source, 10 ** 400)
                 cache = self.cache(source, lambda after, since: [r for r in rows if r['id'] > after])
                 for _ in range(3):
                     cache.refresh()
-                    self.assertTrue(cache.snapshot()['sources'][source]['ok'])
-                    self.assertEqual(cache.snapshot()['coverage']['records'], 1)
+                    self.assertFalse(cache.snapshot()['sources'][source]['ok'])
+                    self.assertEqual(cache.snapshot()['coverage']['records'], 0)
                     self.clock += 20
-                rows.append(dict(rows[-1], id=3, at=AT))
+                rows[-1]['at'] = AT
                 cache.refresh()
                 self.assertEqual(cache.snapshot()['coverage']['records'], 2)
                 self.assertTrue(cache.verify()['equal'])

@@ -549,13 +549,13 @@ class TrafficIndex:
             after = _row_id(out[-1])
             if len(rows) < PAGE:
                 break
-        # Normalize owned rows so one invalid timestamp cannot discard valid siblings.
+        # Validate the entire admitted source before the caller can publish any crossings.
+        # A later NaN/infinity or overflowing integer must not leave earlier rows counted
+        # while the cursor remains unchanged, which would count them again on retry.
         for row in out:
             at = row.get("at")
-            try:
-                row["at"] = parse_at(at) if isinstance(at, (int, float)) else None
-            except ValueError:
-                row["at"] = None
+            if isinstance(at, (int, float)) and not isinstance(at, bool) and parse_at(at) is None:
+                raise ValueError(f"source id {row['id']}: timestamp must be finite")
         return out, after
 
     def _read_journal(self, window_start: float, window_end: float, incremental: bool) -> None:
@@ -568,7 +568,8 @@ class TrafficIndex:
             return
         self._src["journal"] = {"ok": True, "records": 0, "error": None}
         for r in rows:
-            at_f = r.get("at")
+            at = r.get("at")
+            at_f = float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) else None
             if at_f is not None and at_f > window_end:
                 # Re-read skipped IDs once their timestamps enter the window.
                 self._future_at = min(self._future_at, at_f) if self._future_at is not None else at_f
@@ -589,7 +590,8 @@ class TrafficIndex:
             return
         self._src["events"] = {"ok": True, "records": 0, "error": None}
         for r in rows:
-            at_f = r.get("at")
+            at = r.get("at")
+            at_f = float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) else None
             if at_f is not None and at_f > window_end:
                 # Re-read skipped IDs once their timestamps enter the window.
                 self._future_at = min(self._future_at, at_f) if self._future_at is not None else at_f
