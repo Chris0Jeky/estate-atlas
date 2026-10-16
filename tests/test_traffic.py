@@ -736,6 +736,86 @@ class ParseAtTests(unittest.TestCase):
         self.assertIsNone(T.parse_at(None))
 
 
+class TrafficWindowRegressionTests(unittest.TestCase):
+    def test_future_rows_are_excluded_for_every_source(self):
+        for source in T.SOURCES:
+            for offset in (1, H):
+                with self.subTest(source=source, offset=offset):
+                    atlas = {"components": [], "flows": [{"id": "flow", "status": "live",
+                             "traffic": [{"source": source}]}]}
+                    rows = [{"id": 1, "at": NOW + offset}]
+                    ti = T.TrafficIndex(
+                        journal_rows=lambda a, s: rows if source == "journal" else [],
+                        event_rows=lambda a, s: rows if source == "events" else [],
+                        links=lambda: [("shop", rows[0])] if source == "links" else [],
+                        atlas=lambda: ("s", atlas), now=Clock())
+                    ti.refresh()
+                    doc = ti.snapshot(flow="flow")
+                    self.assertEqual(doc["coverage"]["records"], 0)
+                    flow = doc["flows"]["flow"]
+                    self.assertEqual((flow["d24"], flow["d7"], flow["heat"], flow["last_at"]),
+                                     (0, 0, "silent", None))
+                    self.assertEqual(doc["sources"][source]["records"], 0)
+                    self.assertEqual(doc["records"], [])
+                    self.assertTrue(ti.verify()["equal"])
+                    rows[0] = {"id": 2, "at": NOW + offset}
+                    ti._now.t += 16
+                    ti.refresh()
+                    self.assertEqual(ti.snapshot()["coverage"]["records"], int(offset <= 16))
+
+    def test_future_rows_become_current_without_duplicate_counts(self):
+        ti, clock, _, _, _ = make_index(
+            journal=[jrow(1, NOW + 20), jrow(2, NOW)],
+            events=[{"id": 1, "at": NOW + 20}, {"id": 2, "at": NOW}])
+        self.assertEqual(ti.snapshot()["coverage"]["records"], 2)
+        clock.t += 20
+        ti.refresh()
+        self.assertEqual(ti.snapshot()["coverage"]["records"], 4)
+        self.assertTrue(ti.verify()["equal"])
+        clock.t += 20
+        ti.refresh()
+        self.assertEqual(ti.snapshot()["coverage"]["records"], 4)
+
+    def test_invalid_numeric_rows_do_not_discard_valid_rows(self):
+        for source in T.SOURCES:
+            for stamp in (10**400, float("inf"), float("nan")):
+                with self.subTest(source=source, stamp=str(stamp)):
+                    rows = [{"id": 1, "at": NOW}, {"id": 2, "at": stamp},
+                            {"id": 3, "at": NOW}]
+                    ti = T.TrafficIndex(
+                        journal_rows=lambda a, s: [r for r in rows if r["id"] > a]
+                            if source == "journal" else [],
+                        event_rows=lambda a, s: [r for r in rows if r["id"] > a]
+                            if source == "events" else [],
+                        links=lambda: [("shop", r) for r in rows] if source == "links" else [],
+                        atlas=lambda: ("s", EXPORT), now=Clock())
+                    ti.refresh()
+                    doc = ti.snapshot()
+                    self.assertTrue(doc["sources"][source]["ok"])
+                    self.assertEqual(doc["sources"][source]["records"], 2)
+                    self.assertEqual(doc["coverage"]["records"], 2)
+                    ti._now.t += 16
+                    ti.refresh()
+                    self.assertEqual(ti.snapshot()["coverage"]["records"], 2)
+                    self.assertTrue(ti.verify()["equal"])
+
+    def test_d24_includes_the_boundary_hour(self):
+        clock = Clock(NOW + 30 * 60)
+        boundary = clock.t - T.DAY_S
+        ti, _, _, _, _ = make_index([jrow(1, boundary + 5 * 60)], clock=clock)
+        flow = ti.snapshot()["flows"]["f1"]
+        self.assertEqual((flow["d24"], flow["d7"], flow["heat"]), (1, 1, "hot"))
+
+    def test_events_actor_rule_is_invalid(self):
+        for actor in ("sensor:one", "*", None):
+            with self.subTest(actor=actor):
+                compiled = T.compile_rules([{"id": "flow", "traffic": [
+                    {"source": "events", "actor": actor}]}])
+                self.assertEqual(compiled.invalid, 1)
+                self.assertEqual(compiled.by_source["events"], [])
+                self.assertEqual(compiled.flow_counts, {})
+
+
 class RobustIndexTests(unittest.TestCase):
     def test_clock_rollback_restores_expired_low_id_rows(self):
         old = NOW - 167 * H
@@ -756,26 +836,25 @@ class RobustIndexTests(unittest.TestCase):
         self.assertEqual(doc["sources"]["events"]["records"], 2)
         self.assertEqual(doc["flows"]["f1"]["d7"], 2)
 
-    def test_nonfinite_link_times_use_parse_at(self):
+    def test_nonfinite_link_times_are_skipped(self):
         for stamp in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(stamp=stamp):
                 ti, _, _, _, _ = make_index(links=[("shop-ledger", {
                     "from": "client:a", "to": "service:api", "rel": "tracks", "at": stamp})])
                 doc = ti.snapshot()
-                self.assertEqual(doc["sources"]["links"]["undated"], 1)
+                self.assertEqual(doc["sources"]["links"]["undated"], 0)
                 self.assertEqual(doc["flows"]["f1"]["d24"], 0)
 
-    def test_link_timestamp_range_checked_before_recount(self):
+    def test_invalid_link_timestamp_keeps_valid_recount(self):
         ti, clock, _, _, links = make_index(links=[("shop-ledger", {
             "from": "client:a", "to": "service:api", "rel": "tracks", "at": NOW - 100})])
-        before = ti.snapshot()["flows"]
         links.append(("shop-ledger", {"from": "client:b", "to": "service:api",
                                       "rel": "tracks", "at": NOW - 50}))
         links.append(("shop-ledger", {"at": 10**1000}))
         clock.t += 16
-        with self.assertRaisesRegex(ValueError, "timestamp is outside the supported numeric range"):
-            ti.refresh()
-        self.assertEqual(ti.snapshot()["flows"], before)
+        ti.refresh()
+        self.assertEqual(ti.snapshot()["flows"]["f1"]["d7"], 2)
+        self.assertTrue(ti.snapshot()["sources"]["links"]["ok"])
 
     def test_duplicate_page_ids_reject_source(self):
         for source in ("journal", "events"):

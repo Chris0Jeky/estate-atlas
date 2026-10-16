@@ -189,7 +189,7 @@ def compile_rules(flows: Any) -> Rules:
             if not _valid_field(rule.get("verb"), allow_list=True):
                 out.invalid += 1
                 continue
-            if not _valid_field(rule.get("actor")):
+            if (src == "events" and "actor" in rule) or not _valid_field(rule.get("actor")):
                 out.invalid += 1
                 continue
             if not _valid_field(rule.get("subject")):
@@ -368,6 +368,7 @@ class TrafficIndex:
         self._index: dict[str, Any] = {"exact": {}, "kind": {}}
         self._flows_list: list[dict[str, Any]] = []
         self._flows_meta: dict[str, dict[str, Any]] = {}
+        self._future_at: float | None = None
         self._journal_cursor = 0
         self._event_cursor = 0
         self._flow_buckets: dict[str, dict[int, dict[tuple, int]]] = {}
@@ -443,13 +444,15 @@ class TrafficIndex:
                 return {"throttled": False}
             sha_s = sha if isinstance(sha, str) else None
             if (not self._built or sha_s != self._sha
+                    or (self._future_at is not None and t0 >= self._future_at)
+                    or (self._last_refresh is not None and t0 < self._last_refresh)
                     or (self._window_start is not None and window_start < self._window_start)):
                 self._rebuild(doc, sha_s, t0, window_start, start)
             else:
                 self._expire(window_start)
-                self._read_journal(window_start, incremental=True)
-                self._read_events(window_start, incremental=True)
-                self._recount_links(window_start)
+                self._read_journal(window_start, t0, incremental=True)
+                self._read_events(window_start, t0, incremental=True)
+                self._recount_links(window_start, t0)
                 self._window_start = window_start
                 self._atlas_ok = True
                 self._atlas_error = None
@@ -459,6 +462,7 @@ class TrafficIndex:
 
     def _clear_all(self) -> None:
         self._window_start = None
+        self._future_at = None
         self._rules = Rules()
         self._index = {"exact": {}, "kind": {}}
         self._flows_list = []
@@ -496,9 +500,9 @@ class TrafficIndex:
         self._sha = sha
         self._atlas_ok = True
         self._atlas_error = None
-        self._read_journal(window_start, incremental=False)
-        self._read_events(window_start, incremental=False)
-        self._recount_links(window_start)
+        self._read_journal(window_start, t0, incremental=False)
+        self._read_events(window_start, t0, incremental=False)
+        self._recount_links(window_start, t0)
         self._window_start = window_start
         self._built = True
         self._rebuild_ms = (time.perf_counter() - start) * 1000.0
@@ -545,16 +549,16 @@ class TrafficIndex:
             after = _row_id(out[-1])
             if len(rows) < PAGE:
                 break
-        # Validate the entire admitted source before the caller can publish any crossings.
-        # A later NaN/infinity or overflowing integer must not leave earlier rows counted
-        # while the cursor remains unchanged, which would count them again on retry.
+        # Normalize owned rows so one invalid timestamp cannot discard valid siblings.
         for row in out:
             at = row.get("at")
-            if isinstance(at, (int, float)) and not isinstance(at, bool) and parse_at(at) is None:
-                raise ValueError(f"source id {row['id']}: timestamp must be finite")
+            try:
+                row["at"] = parse_at(at) if isinstance(at, (int, float)) else None
+            except ValueError:
+                row["at"] = None
         return out, after
 
-    def _read_journal(self, window_start: float, incremental: bool) -> None:
+    def _read_journal(self, window_start: float, window_end: float, incremental: bool) -> None:
         since = window_start
         after = self._journal_cursor if incremental else 0
         try:
@@ -564,16 +568,18 @@ class TrafficIndex:
             return
         self._src["journal"] = {"ok": True, "records": 0, "error": None}
         for r in rows:
-            at = r.get("at")
-            at_f = float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) else None
-            if at_f is None or at_f < window_start:
+            at_f = r.get("at")
+            if at_f is not None and at_f > window_end:
+                # Re-read skipped IDs once their timestamps enter the window.
+                self._future_at = min(self._future_at, at_f) if self._future_at is not None else at_f
+            if at_f is None or not window_start <= at_f <= window_end:
                 continue
             rec = {"source": "journal", "producer": r.get("producer"), "verb": r.get("verb"),
                    "actor": r.get("actor"), "subject": r.get("subject")}
             self._ingest(rec, at_f, r.get("id"))
         self._journal_cursor = top
 
-    def _read_events(self, window_start: float, incremental: bool) -> None:
+    def _read_events(self, window_start: float, window_end: float, incremental: bool) -> None:
         since = window_start
         after = self._event_cursor if incremental else 0
         try:
@@ -583,9 +589,11 @@ class TrafficIndex:
             return
         self._src["events"] = {"ok": True, "records": 0, "error": None}
         for r in rows:
-            at = r.get("at")
-            at_f = float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) else None
-            if at_f is None or at_f < window_start:
+            at_f = r.get("at")
+            if at_f is not None and at_f > window_end:
+                # Re-read skipped IDs once their timestamps enter the window.
+                self._future_at = min(self._future_at, at_f) if self._future_at is not None else at_f
+            if at_f is None or not window_start <= at_f <= window_end:
                 continue
             nodes = r.get("nodes") if isinstance(r.get("nodes"), list) else []
             rec = {"source": "events", "producer": r.get("source"), "verb": r.get("kind"),
@@ -625,7 +633,7 @@ class TrafficIndex:
             for k in [k for k in newest if k[1] == "links"]:
                 del newest[k]
 
-    def _recount_links(self, window_start: float) -> None:
+    def _recount_links(self, window_start: float, window_end: float) -> None:
         try:
             pairs = [] if self._links_fn is None else self._links_fn()
             if not isinstance(pairs, list):
@@ -645,11 +653,18 @@ class TrafficIndex:
                 continue
             if not isinstance(link, dict):
                 continue
-            dated.append((doc_source, link, parse_at(link.get("at"))))
+            at = link.get("at")
+            try:
+                at_f = parse_at(at)
+            except ValueError:
+                continue
+            if isinstance(at, (int, float)) and not isinstance(at, bool) and at_f is None:
+                continue
+            dated.append((doc_source, link, at_f))
         self._strip_links()
         self._src["links"] = {"ok": True, "records": 0, "undated": 0, "error": None}
         for doc_source, link, at_f in dated:
-            if at_f is not None and at_f < window_start:
+            if at_f is not None and not window_start <= at_f <= window_end:
                 continue
             rec = {"source": "links", "producer": doc_source, "verb": link.get("rel"),
                    "actor": link.get("from"), "subject": link.get("to")}
@@ -783,7 +798,8 @@ class TrafficIndex:
 
     def _snapshot_locked(self, t: float, flow: str | None, source: str | None,
                          basis: str | None) -> dict[str, Any]:
-        d24_start = t - DAY_S
+        # Include the entire boundary hour, as with the seven-day bucket window.
+        d24_start = _bucket(t - DAY_S)
         floor = _bucket(t - WINDOW_S)
         flows: dict[str, Any] = {}
         for fid, meta in self._flows_meta.items():
