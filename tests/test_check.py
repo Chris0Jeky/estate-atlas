@@ -110,6 +110,14 @@ class WorktreeModeTests(CheckFixture):
 
 
 class CheckTests(CheckFixture):
+    def test_batch_reads_a_gitlink_reported_as_submodule(self) -> None:
+        # Git 2.46+ answers "<oid> submodule" for a gitlink where older Git answered "<name> missing".
+        oid = "1" * 40
+        done = subprocess.CompletedProcess([], 0, stdout=f"{oid} submodule\n".encode(), stderr=b"")
+        with patch.object(check, "_git", return_value=done) as git:
+            self.assertEqual(check._blobs("repo", "c0ffee", ["module"]), {"module": (None, "not a file at origin")})
+        self.assertEqual(git.call_count, 1)
+
     def test_batch_reads_preserve_answers_with_bounded_processes_per_repository(self) -> None:
         checkout = make_checkout(self.root / "batch", {
             "tool.py": "def run():\n    return 'tool.out/1'\n", "present.txt": "anchor",

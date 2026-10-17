@@ -405,6 +405,9 @@ def _batch(path: str, names: list[str], bodies: bool) -> list[tuple[str, str, in
             answers.append(("", "missing", 0, None))
             continue
         parts = header.split(" ")
+        if len(parts) == 2 and parts[1] == "submodule":  # Git 2.46+ names a gitlink instead of "missing"
+            answers.append((parts[0], "submodule", 0, None))
+            continue
         if len(parts) != 3 or not parts[2].isdigit():
             return None
         size, body = int(parts[2]), None
@@ -445,6 +448,8 @@ def _blobs(path: str, commit: str, relatives: list[str]) -> dict[str, tuple[byte
                 continue
             if size > MAX_EVIDENCE_BYTES:
                 out[rel] = (None, f"file is larger than {MAX_EVIDENCE_BYTES // (1024 * 1024)} MiB")
+            elif kind == "submodule":
+                out[rel] = (None, "not a file at origin")
             elif kind != "blob":
                 out[rel] = (None, "git cat-file failed")
             else:
