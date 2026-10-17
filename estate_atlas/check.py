@@ -54,7 +54,7 @@ _GIT_LOCAL_ENV = frozenset({
 })
 
 
-def _git(path: str | Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+def _git(path: str | Path, *args: str, stdin: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
     """Read the selected checkout, without inherited repository-local overrides."""
     env = {name: value for name, value in os.environ.items()
            if name.upper() not in _GIT_LOCAL_ENV
@@ -64,7 +64,8 @@ def _git(path: str | Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     env.update(GIT_OPTIONAL_LOCKS="0", GIT_TRACE2="0", GIT_TRACE2_EVENT="0", GIT_TRACE2_PERF="0",
                GIT_NO_LAZY_FETCH="1", GIT_NO_REPLACE_OBJECTS="1")
     return subprocess.run(["git", "-C", str(path), *args], env=env,
-                          capture_output=True, timeout=_GIT_TIMEOUT_S)
+                          capture_output=True, timeout=_GIT_TIMEOUT_S,
+                          **({"input": stdin} if stdin is not None else {}))
 
 
 def _parse_remote_id(url: str) -> str | None:
@@ -312,13 +313,17 @@ def _resolve(repo_id: str, repos: dict[str, dict[str, Any]], host: str,
 
 
 def _read(repo_id: str, rel: str, repos: dict[str, dict[str, Any]],
-          heads: dict[str, str], blobs: dict[tuple[str, str], tuple[bytes | None, str]]
-          ) -> tuple[bytes | None, str]:
+          heads: dict[str, str], blobs: dict[tuple[str, str], tuple[bytes | None, str]],
+          wanted: dict[str, list[str]]) -> tuple[bytes | None, str]:
     key = (repo_id, rel)
     if key not in blobs:
         repo = repos[repo_id]
-        blobs[key] = (_worktree_blob(repo["path"], rel) if repo.get("mode") == "worktree"
-                      else _blob(repo["path"], heads[repo_id], rel))
+        if repo.get("mode") == "worktree":
+            blobs[key] = _worktree_blob(repo["path"], rel)
+        else:
+            rels = list(dict.fromkeys(wanted[repo_id]))
+            for relative, answer in _blobs(repo["path"], heads[repo_id], rels).items():
+                blobs[(repo_id, relative)] = answer
     return blobs[key]
 
 
@@ -349,14 +354,14 @@ def _select_values(parsed: Any, segments: list[str]) -> list[str]:
 def _ref_resolves(ref: dict[str, Any], repos: dict[str, dict[str, Any]], host: str,
                   heads: dict[str, str], unresolved: dict[str, str],
                   blobs: dict[tuple[str, str], tuple[bytes | None, str]],
-                  counts: dict[str, int] | None = None) -> bool:
+                  counts: dict[str, int] | None = None, *, wanted: dict[str, list[str]]) -> bool:
     repo_id = ref["repo"]
     _resolve(repo_id, repos, host, heads, unresolved)
     if repo_id in unresolved:
         if counts is not None:
             counts[repo_id] = counts.get(repo_id, 0) + 1
         return False
-    data, _ = _read(repo_id, ref["path"], repos, heads, blobs)
+    data, _ = _read(repo_id, ref["path"], repos, heads, blobs, wanted)
     if data is None:
         return False
     anchor = ref.get("anchor")
@@ -381,26 +386,86 @@ def _worktree_blob(path: str, relative: str) -> tuple[bytes | None, str]:
         return None, f"cannot read: {exc.strerror or type(exc).__name__}"
 
 
-def _blob(path: str, commit: str, relative: str) -> tuple[bytes | None, str]:
-    """The file's bytes at `commit`, or (None, why). Existence comes from ls-tree, never error text."""
+def _batch(path: str, names: list[str], bodies: bool) -> list[tuple[str, str, int, bytes | None]] | None:
+    """Read object metadata or bodies in one process; None means Git's response was invalid."""
+    done = _git(path, "cat-file", "--batch" if bodies else "--batch-check",
+                stdin=("\n".join(names) + "\n").encode("utf-8"))
+    if done.returncode != 0:
+        return None
+    out, pos = done.stdout, 0
+    answers: list[tuple[str, str, int, bytes | None]] = []
+    for name in names:
+        end = out.find(b"\n", pos)
+        if end < 0:
+            return None
+        header = out[pos:end].decode("utf-8", "replace")
+        pos = end + 1
+        # Git names either the request or, once a path resolved to an absent object, its oid.
+        if header.rsplit(" ", 1)[-1] in ("missing", "ambiguous"):
+            answers.append(("", "missing", 0, None))
+            continue
+        parts = header.split(" ")
+        if len(parts) == 2 and parts[1] == "submodule":  # Git 2.46+ names a gitlink instead of "missing"
+            answers.append((parts[0], "submodule", 0, None))
+            continue
+        if len(parts) != 3 or not parts[2].isdigit():
+            return None
+        size, body = int(parts[2]), None
+        if bodies:
+            body = out[pos:pos + size]
+            if len(body) != size or out[pos + size:pos + size + 1] != b"\n":
+                return None
+            pos += size + 1
+        answers.append((parts[0], parts[1], size, body))
+    return answers
+
+
+def _blobs(path: str, commit: str, relatives: list[str]) -> dict[str, tuple[bytes | None, str]]:
+    """Read exact paths at `commit` in at most three processes, checking sizes before reading bodies."""
+    out: dict[str, tuple[bytes | None, str]] = {rel: (None, "file is absent at origin") for rel in relatives}
+    # Batch requests are newline-delimited; an unencodable name must not spoil the other paths.
+    named = [rel for rel in relatives
+             if "\n" not in rel and "\r" not in rel and not any("\ud800" <= c <= "\udfff" for c in rel)]
+    if not named:
+        return out
     try:
-        # -z: names come back verbatim, not C-quoted, so non-ASCII paths compare exactly
-        listed = _git(path, "ls-tree", "-z", "--name-only", commit, "--", relative)
-        if listed.returncode != 0:
-            return None, "git ls-tree failed"
-        if listed.stdout.split(bytes([0]))[0].decode("utf-8", "replace") != relative:
-            return None, "file is absent at origin"
-        size = _git(path, "cat-file", "-s", f"{commit}:{relative}")
-        if size.returncode != 0:
-            return None, "not a file at origin"
-        if int(size.stdout.strip() or b"0") > MAX_EVIDENCE_BYTES:
-            return None, f"file is larger than {MAX_EVIDENCE_BYTES // (1024 * 1024)} MiB"
-        shown = _git(path, "cat-file", "blob", f"{commit}:{relative}")
+        found = _batch(path, [f"{commit}:{rel}" for rel in named], bodies=False)
+        if found is None:
+            return {**out, **{rel: (None, "git cat-file failed") for rel in named}}
+        missing = [rel for rel, (_, kind, _, _) in zip(named, found) if kind == "missing"]
+        if missing:
+            # A gitlink can exist in the tree while its object is absent from this repository.
+            listed = _git(path, "ls-tree", "-r", "-z", "--name-only", commit)
+            paths = set(listed.stdout.split(b"\0"))
+            for rel in missing:
+                if listed.returncode != 0:
+                    out[rel] = (None, "git ls-tree failed")
+                elif rel.encode("utf-8") in paths:
+                    out[rel] = (None, "not a file at origin")
+        wanted: dict[str, str] = {}
+        for rel, (oid, kind, size, _) in zip(named, found):
+            if kind == "missing":
+                continue
+            if size > MAX_EVIDENCE_BYTES:
+                out[rel] = (None, f"file is larger than {MAX_EVIDENCE_BYTES // (1024 * 1024)} MiB")
+            elif kind == "submodule":
+                out[rel] = (None, "not a file at origin")
+            elif kind != "blob":
+                out[rel] = (None, "git cat-file failed")
+            else:
+                wanted[rel] = oid
+        if not wanted:
+            return out
+        oids = list(dict.fromkeys(wanted.values()))
+        shown = _batch(path, oids, bodies=True)
+        if shown is None:
+            return {**out, **{rel: (None, "git cat-file failed") for rel in wanted}}
+        data = {oid: body for oid, (_, kind, _, body) in zip(oids, shown) if kind == "blob" and body is not None}
+        for rel, oid in wanted.items():
+            out[rel] = (data[oid], "") if oid in data else (None, "git cat-file failed")
     except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
-        return None, f"git failed: {type(exc).__name__}"
-    if shown.returncode != 0:
-        return None, "git cat-file failed"
-    return shown.stdout, ""
+        return {**out, **{rel: (None, f"git failed: {type(exc).__name__}") for rel in named}}
+    return out
 
 
 def _commit_state(repo: dict[str, Any], head: str, commit: str) -> tuple[str, str]:
@@ -494,6 +559,11 @@ def check(doc: dict[str, Any], repos: dict[str, dict[str, Any]], host: str) -> d
     heads: dict[str, str] = {}
     unresolved: dict[str, str] = {}
     blobs: dict[tuple[str, str], tuple[bytes | None, str]] = {}
+    wanted: dict[str, list[str]] = {}
+    for _, ref in [*evidence_refs(doc), *expect_refs(doc)]:
+        wanted.setdefault(ref["repo"], []).append(ref["path"])
+    for vocab in doc.get("vocabularies", []) or []:
+        wanted.setdefault(vocab["source"]["repo"], []).append(vocab["source"]["path"])
     missing: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
     checked = ok = 0
@@ -504,7 +574,7 @@ def check(doc: dict[str, Any], repos: dict[str, dict[str, Any]], host: str) -> d
             counts[repo_id] = counts.get(repo_id, 0) + 1
             continue
         checked += 1
-        data, why = _read(repo_id, ref["path"], repos, heads, blobs)
+        data, why = _read(repo_id, ref["path"], repos, heads, blobs, wanted)
         if data is None:
             missing.append({"owner": owner, "repo": repo_id, "path": ref["path"], "anchor": ref.get("anchor"), "why": why})
             continue
@@ -526,7 +596,7 @@ def check(doc: dict[str, Any], repos: dict[str, dict[str, Any]], host: str) -> d
             vocabularies.append({"id": vid, "status": "unresolved", "missing_in_atlas": [],
                                 "missing_in_source": [], "why": unresolved[repo_id]})
             continue
-        data, why = _read(repo_id, source["path"], repos, heads, blobs)
+        data, why = _read(repo_id, source["path"], repos, heads, blobs, wanted)
         if data is None:
             vocabularies.append({"id": vid, "status": "drift", "missing_in_atlas": [],
                                 "missing_in_source": [], "why": why})
@@ -571,7 +641,7 @@ def check(doc: dict[str, Any], repos: dict[str, dict[str, Any]], host: str) -> d
     expect_unresolved = dict(unresolved)
     for owner in order:
         refs = grouped[owner]
-        if all(_ref_resolves(ref, repos, host, heads, expect_unresolved, blobs) for ref in refs):
+        if all(_ref_resolves(ref, repos, host, heads, expect_unresolved, blobs, wanted=wanted) for ref in refs):
             promotable.append({"owner": owner, "refs": len(refs)})
 
     commits: dict[tuple[str, str], tuple[str, str]] = {}
