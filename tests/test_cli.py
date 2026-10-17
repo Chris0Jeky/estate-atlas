@@ -102,9 +102,9 @@ class CheckTests(TempCase):
 
     def test_worktree_mode_is_restored_afterwards(self):
         from estate_atlas import check
-        before = (check.checkout_identity, check.remote_head, check._blob)
+        before = (check.checkout_identity, check.remote_head, check._blobs)
         run("check", ATLAS, "--repo", "shop=" + str(SHOP), "--worktree")
-        self.assertEqual((check.checkout_identity, check.remote_head, check._blob), before)
+        self.assertEqual((check.checkout_identity, check.remote_head, check._blobs), before)
 
     def test_a_bad_repo_option_is_exit_2(self):
         code, _, err = run("check", ATLAS, "--repo", "shop")

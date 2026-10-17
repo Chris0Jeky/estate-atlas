@@ -400,7 +400,8 @@ def _batch(path: str, names: list[str], bodies: bool) -> list[tuple[str, str, in
             return None
         header = out[pos:end].decode("utf-8", "replace")
         pos = end + 1
-        if header in (f"{name} missing", f"{name} ambiguous"):
+        # Git names either the request or, once a path resolved to an absent object, its oid.
+        if header.rsplit(" ", 1)[-1] in ("missing", "ambiguous"):
             answers.append(("", "missing", 0, None))
             continue
         parts = header.split(" ")
