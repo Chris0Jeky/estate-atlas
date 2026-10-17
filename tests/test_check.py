@@ -110,6 +110,57 @@ class WorktreeModeTests(CheckFixture):
 
 
 class CheckTests(CheckFixture):
+    def test_batch_reads_preserve_answers_with_bounded_processes_per_repository(self) -> None:
+        checkout = make_checkout(self.root / "batch", {
+            "tool.py": "def run():\n    return 'tool.out/1'\n", "present.txt": "anchor",
+            "same.txt": "anchor", "empty.txt": "", "large.txt": "x" * 65, "limit.txt": "x" * 64,
+            "docs/nested.txt": "nested", "space name.txt": "with space",
+            "caf\u00e9.txt": "unicode", "binary.txt": "a\0b",
+            "vocab.json": '{"kinds":["a"]}', "expected.txt": "soon",
+        }, "Owner/alpha")
+        git(checkout, "update-index", "--add", "--cacheinfo", "160000", "1" * 40, "module")
+        git(checkout, "commit", "-q", "-m", "add fictional submodule")
+        git(checkout, "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.doc["repos"]["alpha"]["paths"][HOST] = str(checkout)
+        expected = {
+            "present.txt": (b"anchor", ""), "same.txt": (b"anchor", ""), "empty.txt": (b"", ""),
+            "large.txt": (None, "file is larger than 0 MiB"),
+            "limit.txt": (b"x" * 64, ""),
+            "missing.txt": (None, "file is absent at origin"),
+            "Present.txt": (None, "file is absent at origin"),
+            "docs": (None, "git cat-file failed"),
+            "module": (None, "not a file at origin"),
+            "space name.txt": (b"with space", ""), "caf\u00e9.txt": (b"unicode", ""),
+            "binary.txt": (b"a\0b", ""),
+        }
+        self.doc["components"][0]["evidence"] = [{"repo": "alpha", "path": rel} for rel in expected]
+        self.doc["vocabularies"] = [{"id": "words", "title": "Words", "owner": "tool",
+                                     "source": {"repo": "alpha", "path": "vocab.json", "select": "kinds/*"},
+                                     "terms": [{"term": "a", "means": "First kind."}]}]
+        self.doc["flows"][1]["expect"] = [{"repo": "alpha", "path": "expected.txt"}]
+        answers = {}
+        real_read = check._read
+
+        def read(repo_id, rel, *args, **kwargs):
+            answer = real_read(repo_id, rel, *args, **kwargs)
+            answers[(repo_id, rel)] = answer
+            return answer
+
+        with patch.object(check, "MAX_EVIDENCE_BYTES", 64), patch.object(check, "_read", read), \
+                patch.object(check.subprocess, "run", wraps=subprocess.run) as processes:
+            report = self.run_check()
+        self.assertEqual({rel: answers[("alpha", rel)] for rel in expected}, expected)
+        self.assertEqual(report["status"], "drift")
+        self.assertEqual(len(report["missing"]), 5)
+        self.assertEqual(report["vocabularies"][0]["status"], "ok")
+        self.assertEqual(report["promotable"], [{"owner": "flows.sink-cloud", "refs": 1}])
+        for repo in (checkout, self.extra):
+            object_reads = [call.args[0][3:] for call in processes.call_args_list
+                            if call.args[0][2] == str(repo) and call.args[0][3] in ("ls-tree", "cat-file")]
+            self.assertLessEqual(len(object_reads), 3, object_reads)
+            self.assertEqual([args for args in object_reads if args[0] == "cat-file"],
+                             [["cat-file", "--batch-check"], ["cat-file", "--batch"]])
+
     def test_all_references_present(self) -> None:
         report = self.run_check()
         self.assertEqual((report["status"], report["checked"], report["ok"]), ("ok", 4, 4))

@@ -114,14 +114,14 @@ class ProofDiagnosticIntegrationTests(CheckFixture):
         path.write_text(json.dumps(doc), encoding="utf-8")
         original = check._git
         for error in (OSError("unavailable"), subprocess.TimeoutExpired("git", 30)):
-            for operation in ("ls-tree", "revision"):
+            for operation in ("cat-file", "revision"):
                 with self.subTest(error=type(error).__name__, operation=operation):
-                    def fail(selected, *args):
-                        match = args[0] == "ls-tree" if operation == "ls-tree" else any(
+                    def fail(selected, *args, **kwargs):
+                        match = args[0] == "cat-file" if operation == "cat-file" else any(
                             str(arg).endswith("^{commit}") for arg in args)
                         if match:
                             raise error
-                        return original(selected, *args)
+                        return original(selected, *args, **kwargs)
                     with patch.object(check, "_git", fail):
                         output = io.StringIO()
                         with contextlib.redirect_stdout(output):
@@ -129,7 +129,7 @@ class ProofDiagnosticIntegrationTests(CheckFixture):
                     report = json.loads(output.getvalue())
                     self.assertEqual(code, 1)
                     self.assertEqual(report["status"], "drift")
-                    problems = report["missing"] if operation == "ls-tree" else report["proof"][0]["revisions"]
+                    problems = report["missing"] if operation == "cat-file" else report["proof"][0]["revisions"]
                     self.assertTrue(problems)
                     self.assertEqual(problems[0]["why"], "git failed: " + type(error).__name__)
 

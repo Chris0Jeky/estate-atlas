@@ -278,10 +278,10 @@ class ProofCheckTests(CheckFixture):
                 calls: list[tuple[str, ...]] = []
                 real = check._git
 
-                def spy(path, *args):
+                def spy(path, *args, **kwargs):
                     if Path(path) == self.alpha:
                         calls.append(args)
-                    return real(path, *args)
+                    return real(path, *args, **kwargs)
 
                 doc = self.claim({"claim": "source", "receipts": [receipt("source", self.commit)]})
                 with patch.object(check, "_git", side_effect=spy):
@@ -372,9 +372,9 @@ class ProofCheckTests(CheckFixture):
         calls: list[tuple[str, ...]] = []
         real = check._git
 
-        def spy(path, *args):
+        def spy(path, *args, **kwargs):
             calls.append(args)
-            completed = real(path, *args)
+            completed = real(path, *args, **kwargs)
             return completed
 
         with patch.object(check, "_git", side_effect=spy):
