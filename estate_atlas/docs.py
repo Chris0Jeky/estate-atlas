@@ -469,7 +469,8 @@ def write(atlas_path: Path, doc_path: Path,
           *, style: Style = DEFAULT_STYLE) -> tuple[int, str]:
     """Rewrite the marked blocks in the doc and the glance SVG.
 
-    The SVG defaults to ``atlas-glance.svg`` beside the doc. Returns an exit
+    The SVG defaults to ``atlas-glance.svg`` beside the doc. Overlapping
+    output and input paths are refused before writing. Returns an exit
     code (0, 1 or 2) and a message.
     """
     atlas_path = Path(atlas_path)
@@ -480,6 +481,15 @@ def write(atlas_path: Path, doc_path: Path,
         svg_path = svg_path_for(doc_path)
     else:
         svg_path = Path(svg_path)
+    try:
+        inputs = {atlas_path.resolve()}
+        if traffic_path is not None:
+            inputs.add(traffic_path.resolve())
+        doc_target, svg_target = doc_path.resolve(), svg_path.resolve()
+        if doc_target in inputs or svg_target in inputs or doc_target == svg_target:
+            return 2, "output paths overlap each other or an atlas or traffic input"
+    except (OSError, RuntimeError) as exc:
+        return 2, "cannot resolve output paths: %s" % (exc,)
     try:
         atlas = load_atlas(atlas_path)
     except Exception as exc:
