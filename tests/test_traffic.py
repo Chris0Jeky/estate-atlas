@@ -661,6 +661,26 @@ class RouteFilesTests(unittest.TestCase):
         doc = T.route_files(SHOP_ATLAS, journal=rows, now=T0)
         self.assertEqual(doc["coverage"]["records"], 0)
 
+    def test_nonpositive_file_ids_are_rejected_instead_of_silently_dropped(self):
+        for source in ("journal", "events"):
+            for rid in (0, -1, -100):
+                for prefix in ([], [{"id": 1, "at": T0}], [{"at": T0}]):
+                    with self.subTest(source=source, rid=rid, prefix=prefix):
+                        path = self.write(source + ".jsonl", [json.dumps(row) for row in
+                            [*prefix, {"id": rid, "at": T0}]])
+                        with self.assertRaisesRegex(ValueError,
+                                rf"{source}\.jsonl: explicit id must be positive \({rid}\)"):
+                            T.route_files(SHOP_ATLAS, **{source: path})
+
+    def test_positive_and_assigned_file_ids_keep_all_records(self):
+        for source in ("journal", "events"):
+            with self.subTest(source=source):
+                rows = [{"id": 9, "at": T0}, {"at": T0}, {"id": 1, "at": T0}]
+                path = self.write(source + ".jsonl", [json.dumps(row) for row in rows])
+                result = T.route_files(SHOP_ATLAS, **{source: path})
+                self.assertEqual(result["coverage"]["records"], 3)
+                self.assertTrue(result["sources"][source]["ok"])
+
     def test_unrepresentable_integer_rejects_record_files(self):
         for source in ("journal", "events", "links"):
             for value in (10**1000, -(10**1000)):

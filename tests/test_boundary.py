@@ -125,6 +125,27 @@ class BoundaryTests(unittest.TestCase):
             self.assertNotIn('[open](javascript:', text)
             self.assertIn('&lt;img', text)
 
+    def test_nonpositive_record_id_refuses_without_replacing_output(self):
+        with tempfile.TemporaryDirectory(prefix="atlas record ids ") as temp:
+            root = Path(temp)
+            output = root / "traffic.json"
+            for source in ("journal", "events"):
+                path = root / (source + ".jsonl")
+                for rid in (0, -1):
+                    with self.subTest(source=source, rid=rid):
+                        path.write_text('\n'.join(json.dumps({"id": value, "at": 1_790_000_000})
+                                                  for value in (1, rid)), encoding="utf-8")
+                        output.write_bytes(b"existing valid artifact\n")
+                        result = subprocess.run(
+                            [sys.executable, "-m", "estate_atlas", "route", str(SHOP),
+                             "--" + source, str(path), "--out", str(output)],
+                            cwd=ROOT, capture_output=True)
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertEqual(result.stdout, b"")
+                        self.assertEqual(output.read_bytes(), b"existing valid artifact\n")
+                        self.assertEqual(result.stderr.splitlines(),
+                            [f"estate-atlas: {source}.jsonl: explicit id must be positive ({rid})".encode()])
+
 
 if __name__ == '__main__':
     unittest.main()
