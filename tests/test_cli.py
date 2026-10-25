@@ -286,6 +286,70 @@ class DocsTests(TempCase):
         self.assertEqual(code, 1)
         self.assertIn("stale", err)
 
+    def test_write_refuses_overlapping_paths_without_changing_any_file(self):
+        atlas = self.tmp / "atlas.json"
+        doc = self.tmp / "ARCH.md"
+        traffic = self.tmp / "traffic.json"
+        svg = self.tmp / "atlas-glance.svg"
+        cases = [
+            ("svg is doc", doc, doc),
+            ("svg is atlas", doc, atlas),
+            ("svg is traffic", doc, traffic),
+            ("doc is atlas", atlas, svg),
+            ("doc is traffic", traffic, svg),
+            ("default svg is doc", svg, None),
+            ("default svg is atlas", doc, None),
+            ("default svg is traffic", doc, None),
+            ("normalised svg is doc", doc, self.tmp / "subdir" / ".." / doc.name),
+        ]
+        (self.tmp / "subdir").mkdir()
+        for name, doc_path, svg_path in cases:
+            with self.subTest(case=name):
+                source = json.loads(Path(ATLAS).read_text(encoding="utf-8"))
+                # JSON strings can contain valid doc markers: parsing is no collision guard.
+                source["layers"][0]["summary"] = self.DOC.replace("\n", " ")
+                atlas.write_text(json.dumps(source), encoding="utf-8")
+                doc.write_text(self.DOC, encoding="utf-8")
+                traffic.write_text(json.dumps({"schema": "estate-atlas-traffic@1",
+                                               "notes": self.DOC}), encoding="utf-8")
+                svg.write_bytes(b"existing SVG\n")
+                atlas_path, traffic_path = atlas, traffic
+                if name == "default svg is doc":
+                    svg.write_text(self.DOC, encoding="utf-8")
+                elif name == "default svg is atlas":
+                    svg.write_bytes(atlas.read_bytes())
+                    atlas_path = svg
+                elif name == "default svg is traffic":
+                    svg.write_bytes(traffic.read_bytes())
+                    traffic_path = svg
+                before = {path: path.read_bytes() for path in (atlas, doc, traffic, svg)}
+                args = ["docs", "write", str(atlas_path), "--doc", str(doc_path),
+                        "--traffic", str(traffic_path)]
+                if svg_path is not None:
+                    args.extend(["--svg", str(svg_path)])
+                code, out, err = run(*args)
+                self.assertEqual(code, 2, err)
+                self.assertEqual(out, "")
+                self.assertIn("overlap", err)
+                self.assertEqual({path: path.read_bytes() for path in before}, before)
+
+    def test_write_accepts_distinct_custom_svg_and_preserves_inputs(self):
+        atlas = self.tmp / "atlas.json"
+        atlas.write_bytes(Path(ATLAS).read_bytes())
+        traffic = self.tmp / "traffic.json"
+        traffic.write_text('{"schema":"estate-atlas-traffic@1"}', encoding="utf-8")
+        doc = self.tmp / "ARCH.md"
+        doc.write_text(self.DOC, encoding="utf-8")
+        svg = self.tmp / "images" / "overview.svg"
+        before = {path: path.read_bytes() for path in (atlas, traffic)}
+        args = [str(atlas), "--doc", str(doc), "--svg", str(svg)]
+        self.assertEqual(run("docs", "write", *args, "--traffic", str(traffic))[:2],
+                         (0, "ok\n"))
+        self.assertEqual(run("docs", "check", *args)[0], 0)
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+        self.assertIn("# Shop", doc.read_text(encoding="utf-8"))
+        self.assertTrue(svg.read_text(encoding="utf-8").startswith("<svg"))
+
     def test_a_traffic_snapshot_fills_the_traffic_block(self):
         traffic = self.tmp / "traffic.json"
         run("route", ATLAS, "--journal", JOURNAL, "--events", EVENTS, "--out", str(traffic))
