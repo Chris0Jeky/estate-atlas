@@ -983,7 +983,7 @@ def _read_jsonl(path: Any) -> list[dict[str, Any]]:
 
 
 def _with_ids(rows: list[dict[str, Any]], where: Any) -> list[dict[str, Any]]:
-    """Copies of the rows with an integer `id` and a numeric `at`.
+    """Copies of the rows with a positive integer `id` and a numeric `at`.
 
     A row without an integer id gets the next id after the largest one in the file, in file order. An `at` that
     is not a number or an ISO 8601 time becomes None, and the index then leaves the row out. An integer outside
@@ -995,6 +995,9 @@ def _with_ids(rows: list[dict[str, Any]], where: Any) -> list[dict[str, Any]]:
         row = dict(row)
         rid = _row_id(row)
         if rid is not None:
+            if rid <= 0:
+                # The readers start after cursor 0; accepting this ID would silently drop the record.
+                raise ValueError(f"{Path(where).name}: explicit id must be positive ({rid})")
             if rid in seen:
                 raise ValueError(f"{Path(where).name}: duplicate explicit id {rid}")
             seen.add(rid)

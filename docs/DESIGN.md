@@ -250,6 +250,10 @@ python -m estate_atlas route atlas.json --journal F.jsonl [--events F.jsonl] [--
 `route` takes JSONL record files, prints `estate-atlas-traffic@1`, and exists so anyone can try routing without a
 running service.
 
+Explicit integer IDs in journal and event files must be positive and unique. Zero or negative IDs
+are invalid input (CLI exit 2), because readers begin after cursor zero. Missing or non-integer IDs
+are assigned consecutive positive IDs after the largest explicit ID in the file, in file order.
+
 File-backed JSON and JSONL use strict UTF-8 (with an optional leading BOM): duplicate keys and non-finite numbers,
 including exponents that overflow a finite float, are invalid. Valid JSON records with unusable timestamps and
 non-object entries in a links list retain the documented skip behavior; these are distinct from JSON errors.
