@@ -226,9 +226,44 @@ does not compare payloads across separate day reads. The mode requires more quer
 the total duration of caller-provided readers or their own allocations.
 
 This is day partitioning, not resumable persistence. One day exceeding its budget still fails closed;
-it requires a separately designed resumable reader or an explicitly larger limit. There is no silent
+use the separate checkpoint API below to make progress. There is no silent
 fallback from a three-argument callback to a two-argument callback, no limit bypass, and no cap-triggered
 partial history seal. The default mode is unchanged.
+
+For a single day larger than the budget, `rollup_step` persists one page per journal/event source
+per call. It returns `pending`, `days_written`, `rows_written` and `ms`; a `skipped` result leaves
+progress unchanged. Repeat calls while `pending` is true, handling skips before retrying:
+
+```python
+result = history.rollup_step(index, read_journal_day, read_events_day, read_links, now,
+                             snapshot=source_snapshot_identity)
+```
+
+`source_snapshot_identity()` must return a nonempty string identifying **all three** immutable source
+snapshots, including links and their absence. Readers must be pinned to those snapshots throughout
+each call. Change the identity whenever any source contents change; a path or a highest row ID alone
+cannot establish immutability. The library checks the identity before reading and before saving,
+but cannot verify that an injected reader actually reads the promised snapshot.
+
+The daily time bounds apply before pagination. Each reader returns at most `READ_PAGE` (5,000) rows,
+with unique integer IDs strictly greater than `after_id`. Unlike the original API, checkpoint readers
+must not replay old IDs, even identical rows: payload history is not retained across steps. A short
+page means exhaustion; an exactly full page needs a subsequent read to confirm it. Nonnumeric dates
+retain the existing skip policy. Malformed pages and out-of-window dates refuse the step.
+
+The pending day's counts and both cursors are saved together in SQLite metadata. They remain hidden
+from `read_all`, `last_day`, weekly series and history coverage. Once both ledgers are exhausted,
+links are read once and the complete day, watermark and checkpoint removal commit atomically.
+Earlier completed days remain sealed if a later day fails. Read/write failures preserve the previous
+checkpoint. Concurrent writers compare both the watermark and checkpoint before saving.
+
+`TrafficIndex.routing_digest` identifies the compiled rules, instance mapping and inference flows
+across process restarts; index-like adapters must supply an equivalent stable nonempty string as
+well as the existing `routing_revision` protocol. Changed source or routing identities restart the
+pending day at zero. Within-call revision changes discard that step. The initial day stays fixed
+across midnight; a backwards clock cannot seal it before it is complete. This API bounds ledger
+rows per call, not callback duration, links allocations, or the size of the atlas/count dictionary.
+
 `weekly(rows, last_day, weeks, flows)` and `flags(series, days_stored, first_seen)`:
 - **fading**: last week is below 40% of the 4-week average, and that average is at least 10;
 - **surging**: last week is at least 20 and above 3 times the average;

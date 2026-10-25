@@ -406,6 +406,14 @@ class TrafficIndex:
         """Opaque token replaced whenever routing rules are rebuilt or cleared."""
         return self._rules
 
+    @property
+    def routing_digest(self) -> str:
+        """Stable identity of routing inputs, including inference, for persisted checkpoints."""
+        with self._lock:
+            data = [self._rules.by_source, self._index, self._flows_list]
+            return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=True,
+                                             allow_nan=False).encode('ascii')).hexdigest()
+
     # -- refresh ------------------------------------------------------------------
     def refresh(self) -> dict[str, Any]:
         with self._lock:

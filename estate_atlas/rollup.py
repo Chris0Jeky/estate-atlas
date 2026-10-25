@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import datetime
+import json
 import math
 import sqlite3
 import threading
@@ -220,6 +221,102 @@ class TrafficHistory:
                 raise
             return {"days_written": len(missing), "rows_written": written,
                     "ms": (time.perf_counter() - t0) * 1000.0}
+
+    def rollup_step(self, index: Any, journal_rows: Any, event_rows: Any,
+                    links: Any, now: Any, *, snapshot: Any) -> dict[str, Any]:
+        """Persist one page per ledger for the oldest missing complete UTC day.
+
+        Readers use (after_id, since, until), return at most READ_PAGE rows, and
+        must exclude every id <= after_id (no replay tolerance in this mode).
+        snapshot() must return a nonempty stable identity covering all sources,
+        including links. The caller pins those immutable sources for each call.
+        index additionally supplies a stable routing_digest across restarts.
+        Only a completed day is published; pending counts/cursors live in meta.
+        Changed identities restart the pending day. Existing rollup is unchanged.
+        """
+        t0 = time.perf_counter()
+        def result(days=0, rows=0, pending=True, **extra):
+            return dict(days_written=days, rows_written=rows, pending=pending,
+                        ms=(time.perf_counter() - t0) * 1000.0, **extra)
+        with self._lock:
+            assert self._con is not None
+            revision = index.routing_revision
+            if not index.built or index.flow_count == 0:
+                return result(skipped='index not built')
+            now_f = float(now() if callable(now) else now)
+            today = float(int(now_f // DAY_S) * DAY_S)
+            yesterday = _day_of(today - 1)
+            last = self._meta('last_day')
+            if last is not None and last >= yesterday:
+                return result(pending=False)
+            raw = self._meta('daily_checkpoint')
+            saved = json.loads(raw) if raw is not None else None
+            day = (_day_of(_day_start(last) + DAY_S) if last else
+                   _day_of(today - BACKFILL_DAYS * DAY_S))
+            if saved is not None and saved['last'] == last:
+                day = saved['day']  # preserve the initial range even when midnight passes
+            if day > yesterday:
+                return result(skipped='checkpoint day is not complete')
+            token = snapshot()
+            if not isinstance(token, str) or not token:
+                raise ValueError('snapshot must return a nonempty string')
+            digest = index.routing_digest
+            if not isinstance(digest, str) or not digest:
+                raise ValueError('routing_digest must be a nonempty string')
+            identity = dict(day=day, last=last, snapshot=token, routing=digest)
+            state = saved if saved is not None and all(
+                saved[k] == v for k, v in identity.items()) else dict(
+                    **identity, cursors=[0, 0], done=[False, False], counts={})
+            start, until = _day_start(day), _day_start(day) + DAY_S
+            acc = {(day, fid): cell for fid, cell in state['counts'].items()}
+            def add(date, fid, basis, source):
+                cell = acc.setdefault((date, fid), dict.fromkeys(
+                    ('crossings', 'pulse', 'declared', 'inferred', 'journal', 'events', 'links'), 0))
+                cell['pulse' if basis == 'pulse' else 'crossings'] += 1
+                if basis != 'pulse':
+                    cell[basis] += 1
+                cell[source] += 1
+            for i, (reader, route) in enumerate(((journal_rows, self._roll_journal),
+                                                (event_rows, self._roll_events))):
+                if state['done'][i]:
+                    continue
+                after = state['cursors'][i]
+                rows = self._day_reader(reader, until)(after, start)
+                fresh = _fresh_rows(rows, after, {})
+                if len(fresh) != len(rows) or len(rows) > READ_PAGE:
+                    raise ValueError('checkpoint reader must return at most READ_PAGE fresh integer ids')
+                # Reuse routing/metric semantics; this adapter presents only this admitted page.
+                route(index, lambda cursor, since: fresh if cursor == 0 else [], start, until, add)
+                state['cursors'][i] = fresh[-1]['id'] if fresh else after
+                state['done'][i] = len(rows) < READ_PAGE
+            complete = all(state['done'])
+            if complete:
+                self._roll_links(index, links, start, until, add)
+            state['counts'] = {fid: cell for (_, fid), cell in acc.items()}
+            self._con.execute('BEGIN IMMEDIATE')
+            try:
+                if self._meta('last_day') != last:
+                    self._con.execute('ROLLBACK')
+                    return result(skipped='history changed during rollup')
+                if self._meta('daily_checkpoint') != raw:
+                    self._con.execute('ROLLBACK')
+                    return result(skipped='checkpoint changed during rollup')
+                if (snapshot() != token or not index.built or index.flow_count == 0
+                        or index.routing_revision is not revision or index.routing_digest != digest):
+                    self._con.execute('ROLLBACK')
+                    return result(skipped='source or routing changed during rollup')
+                written = 0
+                if complete:
+                    written = self._write_days(acc, day, day, today)
+                    self._con.execute("DELETE FROM meta WHERE key = 'daily_checkpoint'")
+                else:
+                    self._con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('daily_checkpoint', ?)",
+                                      (json.dumps(state, sort_keys=True),))
+                self._con.execute('COMMIT')
+            except BaseException:
+                self._abort()
+                raise
+            return result(int(complete), written, not complete or day < yesterday)
 
     def _skip_changed_history(self, started: float) -> dict[str, Any]:
         """Release the write lock without publishing counts based on a stale watermark."""

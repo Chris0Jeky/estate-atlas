@@ -217,3 +217,204 @@ class DailyBackfillTests(unittest.TestCase):
         self.calls.clear()
         self.run_daily()
         self.assertEqual(self.calls, [])
+
+    def step(self, journal=(), events=(), links=None, snapshot=lambda: 'source-v1', now=NOW):
+        return self.history.rollup_step(self.cache,
+            journal if callable(journal) else self.reader(journal),
+            events if callable(events) else self.reader(events), links, now, snapshot=snapshot)
+
+    def test_checkpoint_large_day_survives_reopen_without_publishing_partial_counts(self):
+        with patch.object(rollup, 'BACKFILL_DAYS', 1):
+            rows = [dict(JOURNAL, id=i, at=NOW - DAY) for i in range(1, 8)]
+            for _ in range(3):
+                self.assertTrue(self.step(rows)['pending'])
+                self.unsealed()
+                path = self.history.path
+                self.history.close()
+                self.history = rollup.TrafficHistory(path)
+                self.addCleanup(self.history.close)
+                self.cache = index()  # equivalent routing in a new process must resume
+            result = self.step(rows)
+            self.assertFalse(result['pending'])
+            self.assertEqual(result['days_written'], 1)
+            self.assertEqual(sum(r['crossings'] for r in self.history.read_all()), 7)
+            self.assertEqual([a for a, _, _ in self.calls if a], [2, 4, 6])
+            self.calls.clear()
+            self.assertEqual(self.step(rows)['days_written'], 0)
+            self.assertEqual(self.calls, [])
+
+    def test_checkpoint_changed_snapshot_or_routing_restarts_from_zero(self):
+        with patch.object(rollup, 'BACKFILL_DAYS', 1):
+            rows = [dict(JOURNAL, id=i, at=NOW - DAY) for i in range(1, 4)]
+            token = ['v1']
+            self.step(rows, snapshot=lambda: token[0])
+            token[0] = 'v2'
+            self.calls.clear()
+            self.assertTrue(self.step(rows, snapshot=lambda: token[0])['pending'])
+            self.assertEqual(self.calls[0][0], 0)
+            self.cache._rules = traffic.compile_rules([dict(DOC['flows'][0],
+                traffic=[{'source': 'journal', 'verb': '*', 'pulse': True}])])
+            self.cache._memo.clear()
+            self.calls.clear()
+            self.assertTrue(self.step(rows, snapshot=lambda: token[0])['pending'])
+            self.assertEqual(self.calls[0][0], 0)
+            self.step(rows, snapshot=lambda: token[0])
+            self.assertEqual(sum(r['pulse'] for r in self.history.read_all()), 3)
+            self.assertEqual(sum(r['crossings'] for r in self.history.read_all()), 0)
+
+    def test_checkpoint_source_failure_preserves_cursors_for_retry(self):
+        with patch.object(rollup, 'BACKFILL_DAYS', 1):
+            rows = [dict(JOURNAL, id=i, at=NOW - DAY) for i in range(1, 4)]
+            self.step(rows)
+            saved = self.history._meta('daily_checkpoint')
+            def broken(*args):
+                raise OSError('fixture page unavailable')
+            with self.assertRaisesRegex(OSError, 'fixture page unavailable'):
+                self.step(broken)
+            self.assertEqual(self.history._meta('daily_checkpoint'), saved)
+            self.unsealed()
+            self.step(rows)
+            self.assertEqual(sum(r['crossings'] for r in self.history.read_all()), 3)
+
+    def test_checkpoint_changed_identity_during_read_does_not_save_progress(self):
+        for change in ('source', 'routing'):
+            with self.subTest(change=change):
+                token = ['v1']
+                def changed(after, since, until):
+                    if change == 'source':
+                        token[0] = 'v2'
+                    else:
+                        self.cache._rules = traffic.compile_rules(DOC['flows'])
+                    return []
+                result = self.step(changed, snapshot=lambda: token[0])
+                self.assertIn('changed', result['skipped'])
+                self.assertIsNone(self.history._meta('daily_checkpoint'))
+                self.unsealed()
+
+    def test_checkpoint_bad_pages_and_replays_do_not_seal_or_checkpoint(self):
+        row = dict(JOURNAL, at=NOW - 3 * DAY)
+        for rows in (None, [dict(row, id=True)], [dict(row, id=0)],
+                     [dict(row, at=NOW)], [row, row],
+                     [dict(row, id=i) for i in range(1, 4)]):
+            with self.subTest(rows=rows), self.assertRaises(ValueError):
+                self.step(lambda *args: rows)
+            self.assertIsNone(self.history._meta('daily_checkpoint'))
+            self.unsealed()
+
+    def test_checkpoint_exact_page_needs_empty_confirmation_and_links_once(self):
+        with patch.object(rollup, 'BACKFILL_DAYS', 1):
+            rows = [dict(JOURNAL, id=i, at=NOW - DAY) for i in (1, 2)]
+            links_calls = []
+            def links():
+                links_calls.append(True)
+                return [('observer', {'from': 'client:a', 'to': 'service:b',
+                                     'rel': 'sent', 'at': NOW - DAY})]
+            events = [dict(EVENT, id=r['id'], at=r['at']) for r in rows]
+            self.assertTrue(self.step(rows, events, links)['pending'])
+            self.assertEqual(links_calls, [])
+            self.unsealed()
+            self.step(rows, events, links)
+            self.assertEqual(links_calls, [True])
+            self.assertEqual(sum(r['crossings'] for r in self.history.read_all()), 5)
+
+    def test_checkpoint_failed_publication_rolls_back_counts_and_progress(self):
+        with patch.object(rollup, 'BACKFILL_DAYS', 1):
+            rows = [dict(JOURNAL, at=NOW - DAY)]
+            original = self.history._write_days
+            def fail(*args):
+                original(*args)
+                raise sqlite3.OperationalError('fixture publication failure')
+            with patch.object(self.history, '_write_days', fail):
+                with self.assertRaisesRegex(sqlite3.OperationalError, 'fixture publication failure'):
+                    self.step(rows)
+            self.unsealed()
+            self.assertIsNone(self.history._meta('daily_checkpoint'))
+            self.step(rows)
+            self.assertEqual(sum(r['crossings'] for r in self.history.read_all()), 1)
+
+    def test_checkpoint_competing_writer_cannot_regress_history(self):
+        other = rollup.TrafficHistory(self.history.path)
+        self.addCleanup(other.close)
+        def compete(after, since, until):
+            other.rollup(self.cache, lambda *a: [], lambda *a: [], None, NOW + DAY)
+            return []
+        result = self.step(compete)
+        self.assertEqual(result['skipped'], 'history changed during rollup')
+        self.assertEqual(self.history.last_day(), rollup._day_of(NOW))
+        self.assertIsNone(self.history._meta('daily_checkpoint'))
+
+    def test_checkpoint_competing_step_cannot_overwrite_newer_cursors(self):
+        other = rollup.TrafficHistory(self.history.path)
+        self.addCleanup(other.close)
+        rows = [dict(JOURNAL, id=i, at=NOW - 3 * DAY) for i in (1, 2)]
+        def compete(after, since, until):
+            other.rollup_step(self.cache, self.reader(rows), self.reader([]), None,
+                              NOW, snapshot=lambda: 'source-v1')
+            return []
+        result = self.step(compete)
+        self.assertEqual(result['skipped'], 'checkpoint changed during rollup')
+        self.unsealed()
+        self.step(rows)
+        self.assertEqual(sum(r['crossings'] for r in self.history.read_all()), 2)
+
+    def test_checkpoint_midnight_and_rollback_preserve_original_day(self):
+        rows = [dict(JOURNAL, id=i, at=NOW - 3 * DAY) for i in (1, 2)]
+        self.step(rows)
+        saved = self.history._meta('daily_checkpoint')
+        result = self.step(rows, now=NOW - 3 * DAY)
+        self.assertEqual(result['skipped'], 'checkpoint day is not complete')
+        self.assertEqual(self.history._meta('daily_checkpoint'), saved)
+        self.calls.clear()
+        self.step(rows, now=NOW + DAY)
+        self.assertEqual(self.calls, [(2, NOW - 3 * DAY, NOW - 2 * DAY)])
+        self.assertEqual(self.history.last_day(), rollup._day_of(NOW - 3 * DAY))
+
+    def test_checkpoint_failed_save_and_late_links_failure_remain_retryable(self):
+        with patch.object(rollup, 'BACKFILL_DAYS', 1):
+            rows = [dict(JOURNAL, id=i, at=NOW - DAY) for i in (1, 2)]
+            self.history._con.execute("""CREATE TEMP TRIGGER refuse_checkpoint BEFORE INSERT ON meta
+                WHEN NEW.key = 'daily_checkpoint' BEGIN SELECT RAISE(ABORT, 'fixture save failure'); END""")
+            with self.assertRaisesRegex(sqlite3.IntegrityError, 'fixture save failure'):
+                self.step(rows)
+            self.history._con.execute('DROP TRIGGER refuse_checkpoint')
+            self.assertIsNone(self.history._meta('daily_checkpoint'))
+            self.step(rows)
+            saved = self.history._meta('daily_checkpoint')
+            with self.assertRaisesRegex(ValueError, 'links source must return a list'):
+                self.step(rows, links=lambda: None)
+            self.assertEqual(self.history._meta('daily_checkpoint'), saved)
+            self.unsealed()
+            self.step(rows)
+            self.assertEqual(sum(r['crossings'] for r in self.history.read_all()), 2)
+
+    def test_checkpoint_requires_valid_snapshot_and_built_index(self):
+        for token in (None, '', {}, 1):
+            with self.subTest(token=token), self.assertRaisesRegex(ValueError, 'snapshot'):
+                self.step(snapshot=lambda: token)
+            self.unsealed()
+        self.cache._built = False
+        def forbidden(*args):
+            self.fail('unbuilt index must not read sources')
+        self.assertEqual(self.step(forbidden, forbidden, forbidden, forbidden)['skipped'], 'index not built')
+
+    def test_checkpoint_rejects_replayed_ids_after_persisted_cursor(self):
+        rows = [dict(JOURNAL, id=i, at=NOW - 3 * DAY) for i in (1, 2)]
+        self.step(rows)
+        saved = self.history._meta('daily_checkpoint')
+        with self.assertRaisesRegex(ValueError, 'fresh integer ids'):
+            self.step(lambda *args: rows)
+        self.assertEqual(self.history._meta('daily_checkpoint'), saved)
+        self.unsealed()
+
+    def test_checkpoint_inference_mapping_change_discards_old_counts(self):
+        with patch.object(rollup, 'BACKFILL_DAYS', 1):
+            rows = [dict(JOURNAL, id=i, at=NOW - DAY) for i in range(1, 4)]
+            self.step(rows)
+            self.cache._index = {'exact': {}, 'kind': {}}
+            self.cache._memo.clear()
+            self.calls.clear()
+            self.step(rows)
+            self.assertEqual(self.calls[0][0], 0)
+            self.step(rows)
+            self.assertEqual(self.history.read_all(), [])
+            self.assertEqual(self.history.days_stored(), 1)

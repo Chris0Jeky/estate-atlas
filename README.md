@@ -311,8 +311,8 @@ Open work, from the issue tracker:
 - [#72](https://github.com/Chris0Jeky/estate-atlas/issues/72): `check` starts three git processes per evidence file,
   which is slow on Windows. A draft PR, [#83](https://github.com/Chris0Jeky/estate-atlas/pull/83), adds an evidence
   batching helper that is not wired into the checker yet.
-- [#71](https://github.com/Chris0Jeky/estate-atlas/issues/71): a single day above the rollup row budget still needs
-  a resumable read strategy. Duplicate-ID checks, source-health contracts and rollback throttling are implemented;
+- [#71](https://github.com/Chris0Jeky/estate-atlas/issues/71): opt-in `TrafficHistory.rollup_step` now supports
+  source-snapshot-bound daily checkpoints. Duplicate-ID checks, source-health contracts and rollback throttling are implemented;
   [#87](https://github.com/Chris0Jeky/estate-atlas/pull/87) also prevents partial ingestion of invalid numeric timestamps.
 
 Known limits, as documented in the design:
@@ -320,7 +320,8 @@ Known limits, as documented in the design:
 - By default `check` proves what the checkout's `origin/<default branch>` contains. `--worktree` reads the working
   files instead. Neither says anything about remote freshness, runtime behaviour or deployment.
 - A partial clone is treated as unresolved, because `check` does not fetch missing objects.
-- Day-bounded rollups fail closed when one day exceeds its row budget. There is no resumable reader yet.
+- Day-bounded `rollup` fails closed when one day exceeds its row budget. `rollup_step` can resume that day
+  when callers provide immutable source snapshots and the stricter paged-reader contract in the design.
 - The public-overlay leak gate checks for private terms as substrings and whole words. It is a strong check, not a
   proof that nothing private remains.
 
