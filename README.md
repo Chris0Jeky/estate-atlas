@@ -305,6 +305,11 @@ The full format is described in [docs/DESIGN.md](docs/DESIGN.md). Start with `va
 estate-atlas is pre-release. The package version is `0.1.0.dev0`, and the atlas format and CLI may still change
 before 0.1.0.
 
+The unmerged [resumable rollup candidate (#95)](https://github.com/Chris0Jeky/estate-atlas/pull/95)
+addresses oversized days with snapshot-bound checkpoints. It is not available on `main`;
+see the [consumer qualification requirements](docs/QUALIFICATION.md#resumable-rollup-candidate)
+before adopting it. The open work and limits below describe `main`.
+
 Open work, from the issue tracker:
 
 - [#43](https://github.com/Chris0Jeky/estate-atlas/issues/43): optional per-receipt source references for evidence levels.

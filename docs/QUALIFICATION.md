@@ -150,3 +150,23 @@ connection advanced the watermark, it rolls back and returns `skipped: history c
 with zero days/rows written. Retry against the current history; do not treat the skipped computation
 as a newly sealed day. This applies to ordinary and day-bounded readers, including metadata-only
 sealing of already-present rows. It does not rewrite prior history or validate manual database edits.
+
+### Resumable rollup candidate
+
+[PR #95](https://github.com/Chris0Jeky/estate-atlas/pull/95) proposes `TrafficHistory.rollup_step`;
+it is unmerged and unavailable on `main`. Qualify the exact candidate together with the intended
+base, retaining the base's existing input validation. A passing source suite or code review does
+not establish that a consumer implements the candidate's reader contract.
+
+Before adopting it, check the candidate's [snapshot and pagination contract](https://github.com/Chris0Jeky/estate-atlas/blob/71bbc072956440089f325ecba3db109ad31c7459/docs/DESIGN.md#L233-L265)
+against the consumer's readers. The snapshot identity must cover immutable journal, event and link
+inputs, including absent links. Readers must apply day bounds before pagination, return fresh IDs
+strictly after the cursor, and treat a short page as exhaustion. An exactly full final page needs
+another read to confirm exhaustion. A path or highest row ID alone is not an immutable snapshot.
+
+Run the daily-backfill and rollup regressions and the complete source suite on that exact tree.
+Qualify installation separately with the wheel runner above. For the actual consumer, verify
+restart/retry behavior, identity changes and publication of complete days only, using disposable
+inputs and history. Record reader/snapshot evidence and measured resource use separately: the
+candidate bounds ledger rows per call, not callback time, link allocations or count-map size.
+Hosted tests with fictional readers do not prove live-producer integration or native performance.
